@@ -1,0 +1,1584 @@
+package com.example.service
+
+import android.util.Log
+import com.example.data.model.ExtractedInfo
+import com.example.data.model.GeneratedIdentity
+import com.example.data.model.ProxyItem
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.Credentials
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.Socket
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import java.util.Random
+import java.util.concurrent.TimeUnit
+
+data class UserAgentOption(val label: String, val value: String)
+
+data class ProxyDiagnosticResult(
+    val isWorking: Boolean,
+    val exitIp: String,
+    val pingMs: Long,
+    val protocol: String,
+    val country: String = "US",
+    val city: String = "",
+    val isp: String = "",
+    val qualityScore: Int = 0,
+    val errorMessage: String = ""
+)
+
+object IdentityService {
+
+    val USER_AGENTS = listOf(
+        UserAgentOption(
+            label = "Chrome 122 · Windows",
+            value = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ),
+        UserAgentOption(
+            label = "Chrome 121 · macOS",
+            value = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+        ),
+        UserAgentOption(
+            label = "Safari 17 · iPhone",
+            value = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Mobile/15E148 Safari/604.1"
+        ),
+        UserAgentOption(
+            label = "Safari 17 · macOS",
+            value = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15"
+        ),
+        UserAgentOption(
+            label = "Firefox 123 · Windows",
+            value = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0"
+        ),
+        UserAgentOption(
+            label = "Edge 122 · Windows",
+            value = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"
+        ),
+        UserAgentOption(
+            label = "Chrome 126 · Android (Pixel 8 Pro)",
+            value = "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36"
+        ),
+        UserAgentOption(
+            label = "Chrome 125 · Android (Galaxy S24 Ultra)",
+            value = "Mozilla/5.0 (Linux; Android 14; SM-S928U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.165 Mobile Safari/537.36"
+        ),
+        UserAgentOption(
+            label = "Chrome 124 · Android (Galaxy S23)",
+            value = "Mozilla/5.0 (Linux; Android 14; SM-S911U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.179 Mobile Safari/537.36"
+        ),
+        UserAgentOption(
+            label = "Chrome 122 · Android (Pixel 8)",
+            value = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.64 Mobile Safari/537.36"
+        )
+    )
+
+    val RANDOM_REFERRERS = listOf(
+        "https://www.google.com/search?q=deals+and+rewards",
+        "https://www.bing.com/search?q=online+surveys+and+offers",
+        "https://www.facebook.com/",
+        "https://twitter.com/promotions",
+        "https://www.instagram.com/",
+        "https://www.tiktok.com/",
+        "https://www.reddit.com/r/freebies/",
+        "https://www.youtube.com/"
+    )
+
+    private val FIRST_NAMES_MALE = listOf(
+        "James", "John", "Robert", "Michael", "William", "David", "Richard", "Joseph",
+        "Thomas", "Charles", "Daniel", "Matthew", "Anthony", "Mark", "Donald", "Steven",
+        "Paul", "Andrew", "Joshua", "Kenneth", "Kevin", "Brian", "George", "Timothy",
+        "Ronald", "Jason", "Edward", "Jeffrey", "Ryan", "Jacob", "Gary", "Nicholas"
+    )
+
+    private val FIRST_NAMES_FEMALE = listOf(
+        "Mary", "Patricia", "Jennifer", "Linda", "Elizabeth", "Barbara", "Susan", "Jessica",
+        "Sarah", "Karen", "Lisa", "Nancy", "Betty", "Margaret", "Sandra", "Ashley",
+        "Kimberly", "Emily", "Donna", "Michelle", "Carol", "Amanda", "Melissa", "Deborah",
+        "Stephanie", "Rebecca", "Sharon", "Laura", "Cynthia", "Kathleen", "Amy", "Angela"
+    )
+
+    private val LAST_NAMES = listOf(
+        "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis",
+        "Rodriguez", "Martinez", "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson",
+        "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee", "Perez", "Thompson",
+        "White", "Harris", "Sanchez", "Clark", "Ramirez", "Lewis", "Robinson", "Walker"
+    )
+
+    private val US_CITIES = listOf(
+        Triple("New York", "NY", "10001"),
+        Triple("Los Angeles", "CA", "90001"),
+        Triple("Chicago", "IL", "60601"),
+        Triple("Houston", "TX", "77001"),
+        Triple("Phoenix", "AZ", "85001"),
+        Triple("Philadelphia", "PA", "19101"),
+        Triple("San Antonio", "TX", "78201"),
+        Triple("San Diego", "CA", "92101"),
+        Triple("Dallas", "TX", "75201"),
+        Triple("Austin", "TX", "78701"),
+        Triple("Jacksonville", "FL", "32201"),
+        Triple("Fort Worth", "TX", "76101"),
+        Triple("Columbus", "OH", "43201"),
+        Triple("Charlotte", "NC", "28201"),
+        Triple("Indianapolis", "IN", "46201"),
+        Triple("Seattle", "WA", "98101"),
+        Triple("Denver", "CO", "80201"),
+        Triple("Washington", "DC", "20001"),
+        Triple("Boston", "MA", "02101"),
+        Triple("Nashville", "TN", "37201")
+    )
+
+    private val STREET_NAMES = listOf(
+        "Main St", "Oak Ave", "Maple St", "Cedar Ln", "Elm St", "Washington Blvd",
+        "Park Ave", "Lakeview Dr", "Pine St", "Sunset Blvd", "Broadway", "Highland Ave",
+        "Church Rd", "Lincoln Way", "Hillcrest Ave", "Valley Dr", "River Rd"
+    )
+
+    private val BANKS = listOf(
+        "Chase Bank", "Bank of America", "Wells Fargo", "Citibank", "Capital One",
+        "PNC Bank", "US Bank", "TD Bank", "Truist", "Discover Bank"
+    )
+
+    private val EMAIL_DOMAINS = listOf(
+        "gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com", "proton.me"
+    )
+
+    // Expert: city-consistent area codes (prevents phone-geo mismatch signals)
+    private val CITY_AREA_CODES = mapOf(
+        "New York" to listOf(212, 646, 718, 917),
+        "Los Angeles" to listOf(213, 310, 323, 818),
+        "Chicago" to listOf(312, 773, 872),
+        "Houston" to listOf(281, 346, 713, 832),
+        "Phoenix" to listOf(480, 602, 623),
+        "Philadelphia" to listOf(215, 267),
+        "San Antonio" to listOf(210, 726),
+        "San Diego" to listOf(619, 858),
+        "Dallas" to listOf(214, 469, 972),
+        "Austin" to listOf(512, 737),
+        "Jacksonville" to listOf(904),
+        "Fort Worth" to listOf(682, 817),
+        "Columbus" to listOf(614, 380),
+        "Charlotte" to listOf(704, 980),
+        "Indianapolis" to listOf(317, 463),
+        "Seattle" to listOf(206),
+        "Denver" to listOf(303, 720),
+        "Washington" to listOf(202),
+        "Boston" to listOf(617, 857),
+        "Nashville" to listOf(615, 629)
+    )
+
+    private val rnd = Random()
+
+    fun resolveUserAgent(ua: String?, isMobileDefault: Boolean = true): String {
+        val clean = ua?.trim().orEmpty()
+            .replace("; wv)", ")")
+            .replace(" wv)", ")")
+            .replace(Regex("""Version/\d+\.\d+\s+"""), "")
+        if (clean.isBlank() || clean.equals("random", ignoreCase = true) || clean.startsWith("random", ignoreCase = true)) {
+            return when {
+                clean.contains("mobile", ignoreCase = true) || isMobileDefault -> {
+                    USER_AGENTS.filter { it.value.contains("Android") && it.value.contains("Chrome") }
+                        .randomOrNull()?.value ?: USER_AGENTS.last().value
+                }
+                clean.contains("desktop", ignoreCase = true) -> {
+                    USER_AGENTS.filter { it.value.contains("Windows") && it.value.contains("Chrome") }
+                        .randomOrNull()?.value ?: USER_AGENTS.first().value
+                }
+                else -> USER_AGENTS.filter { it.value.contains("Chrome") }.randomOrNull()?.value ?: USER_AGENTS.last().value
+            }
+        }
+        return clean
+    }
+
+    /**
+     * Returns country-synchronized Geo/Timezone/Language/Coordinates profile so that
+     * Intl.DateTimeFormat().resolvedOptions().timeZone, Date.getTimezoneOffset(), navigator.language,
+     * and HTML5 Geolocation NEVER contradict the proxy's exit IP country.
+     */
+    fun resolveCountryGeoDefaults(
+        rawCountryCode: String,
+        exitIp: String = "",
+        cityHint: String = "",
+        ispHint: String = "",
+        isProxy: Boolean = true
+    ): ExtractedInfo {
+        val cc = rawCountryCode.trim().uppercase(Locale.US).takeIf { it.length == 2 && it.all { c -> c in 'A'..'Z' } } ?: "US"
+        data class CountryGeoSpec(
+            val countryName: String,
+            val defaultCity: String,
+            val region: String,
+            val postal: String,
+            val timezone: String,
+            val language: String,
+            val currency: String,
+            val lat: Double,
+            val lon: Double
+        )
+        val spec = when (cc) {
+            "GB", "UK" -> CountryGeoSpec("United Kingdom", "London", "ENG", "SW1A 1AA", "Europe/London", "en-GB", "GBP", 51.5074, -0.1278)
+            "CA" -> CountryGeoSpec("Canada", "Toronto", "ON", "M5H 2N2", "America/Toronto", "en-CA", "CAD", 43.6532, -79.3832)
+            "AU" -> CountryGeoSpec("Australia", "Sydney", "NSW", "2000", "Australia/Sydney", "en-AU", "AUD", -33.8688, 151.2093)
+            "DE" -> CountryGeoSpec("Germany", "Frankfurt", "HE", "60311", "Europe/Berlin", "de-DE", "EUR", 50.1109, 8.6821)
+            "FR" -> CountryGeoSpec("France", "Paris", "IDF", "75001", "Europe/Paris", "fr-FR", "EUR", 48.8566, 2.3522)
+            "NL" -> CountryGeoSpec("Netherlands", "Amsterdam", "NH", "1012", "Europe/Amsterdam", "nl-NL", "EUR", 52.3676, 4.9041)
+            "ES" -> CountryGeoSpec("Spain", "Madrid", "MD", "28001", "Europe/Madrid", "es-ES", "EUR", 40.4168, -3.7038)
+            "IT" -> CountryGeoSpec("Italy", "Milan", "LOM", "20121", "Europe/Rome", "it-IT", "EUR", 45.4642, 9.1900)
+            "SE" -> CountryGeoSpec("Sweden", "Stockholm", "AB", "111 20", "Europe/Stockholm", "sv-SE", "SEK", 59.3293, 18.0686)
+            "CH" -> CountryGeoSpec("Switzerland", "Zurich", "ZH", "8001", "Europe/Zurich", "de-CH", "CHF", 47.3769, 8.5417)
+            "AT" -> CountryGeoSpec("Austria", "Vienna", "W", "1010", "Europe/Vienna", "de-AT", "EUR", 48.2082, 16.3738)
+            "BE" -> CountryGeoSpec("Belgium", "Brussels", "BRU", "1000", "Europe/Brussels", "fr-BE", "EUR", 50.8503, 4.3517)
+            "PL" -> CountryGeoSpec("Poland", "Warsaw", "MZ", "00-001", "Europe/Warsaw", "pl-PL", "PLN", 52.2297, 21.0122)
+            "BR" -> CountryGeoSpec("Brazil", "Sao Paulo", "SP", "01001-000", "America/Sao_Paulo", "pt-BR", "BRL", -23.5505, -46.6333)
+            "MX" -> CountryGeoSpec("Mexico", "Mexico City", "CMX", "06000", "America/Mexico_City", "es-MX", "MXN", 19.4326, -99.1332)
+            "JP" -> CountryGeoSpec("Japan", "Tokyo", "13", "100-0001", "Asia/Tokyo", "ja-JP", "JPY", 35.6762, 139.6503)
+            "SG" -> CountryGeoSpec("Singapore", "Singapore", "SG", "018956", "Asia/Singapore", "en-SG", "SGD", 1.3521, 103.8198)
+            "AE" -> CountryGeoSpec("United Arab Emirates", "Dubai", "DU", "00000", "Asia/Dubai", "ar-AE", "AED", 25.2048, 55.2708)
+            "SA" -> CountryGeoSpec("Saudi Arabia", "Riyadh", "01", "11564", "Asia/Riyadh", "ar-SA", "SAR", 24.7136, 46.6753)
+            "MA" -> CountryGeoSpec("Morocco", "Casablanca", "06", "20000", "Africa/Casablanca", "fr-MA", "MAD", 33.5731, -7.5898)
+            "EG" -> CountryGeoSpec("Egypt", "Cairo", "C", "11511", "Africa/Cairo", "ar-EG", "EGP", 30.0444, 31.2357)
+            "DZ" -> CountryGeoSpec("Algeria", "Algiers", "16", "16000", "Africa/Algiers", "fr-DZ", "DZD", 36.7538, 3.0588)
+            "TN" -> CountryGeoSpec("Tunisia", "Tunis", "11", "1000", "Africa/Tunis", "fr-TN", "TND", 36.8065, 10.1815)
+            else -> CountryGeoSpec("United States", "New York", "NY", "10001", "America/New_York", "en-US", "USD", 40.7128, -74.0060)
+        }
+        return ExtractedInfo(
+            ip = exitIp,
+            country = spec.countryName,
+            countryCode = if (cc == "UK") "GB" else cc,
+            city = cityHint.ifBlank { spec.defaultCity },
+            region = spec.region,
+            street = "",
+            postalCode = spec.postal,
+            timezone = spec.timezone,
+            language = spec.language,
+            currency = spec.currency,
+            isp = ispHint.ifBlank { "Residential Network" },
+            org = ispHint.ifBlank { "Residential Network" },
+            latitude = spec.lat,
+            longitude = spec.lon,
+            isProxy = isProxy
+        )
+    }
+
+    fun generateUTM(baseUrl: String): String {
+        val sources = listOf("google", "facebook", "newsletter", "twitter", "partner_direct")
+        val mediums = listOf("cpc", "social", "email", "banner", "cpa_affiliate")
+        val campaigns = listOf("spring_promo", "rewards_2026", "signup_bonus", "special_offer", "lead_gen")
+
+        val source = sources[rnd.nextInt(sources.size)]
+        val medium = mediums[rnd.nextInt(mediums.size)]
+        val campaign = campaigns[rnd.nextInt(campaigns.size)]
+        val content = "var_${rnd.nextInt(900) + 100}"
+
+        val separator = if (baseUrl.contains("?")) "&" else "?"
+        return "$baseUrl${separator}utm_source=$source&utm_medium=$medium&utm_campaign=$campaign&utm_content=$content"
+    }
+
+    fun generateIdentity(countryCode: String = "US", providedEmail: String? = null): GeneratedIdentity {
+        val isMale = rnd.nextBoolean()
+        val gender = if (isMale) "Male" else "Female"
+        val firstName = if (isMale) {
+            FIRST_NAMES_MALE[rnd.nextInt(FIRST_NAMES_MALE.size)]
+        } else {
+            FIRST_NAMES_FEMALE[rnd.nextInt(FIRST_NAMES_FEMALE.size)]
+        }
+        val lastName = LAST_NAMES[rnd.nextInt(LAST_NAMES.size)]
+        val fullName = "$firstName $lastName"
+
+        val email = providedEmail?.trim()?.takeIf { it.isNotEmpty() } ?: run {
+            val domain = EMAIL_DOMAINS[rnd.nextInt(EMAIL_DOMAINS.size)]
+            val num = rnd.nextInt(900) + 100
+            "${firstName.lowercase(Locale.US)}.${lastName.lowercase(Locale.US)}$num@$domain"
+        }
+
+        val username = "${firstName.lowercase(Locale.US)}_${lastName.lowercase(Locale.US)}${rnd.nextInt(90) + 10}"
+        val password = "${firstName.take(3)}!${lastName.take(3)}#${rnd.nextInt(9000) + 1000}"
+
+        val streetNum = rnd.nextInt(8999) + 100
+        val streetName = STREET_NAMES[rnd.nextInt(STREET_NAMES.size)]
+        val address = "$streetNum $streetName"
+
+        val cityData = US_CITIES[rnd.nextInt(US_CITIES.size)]
+        val city = cityData.first
+        val state = cityData.second
+        val postalCode = cityData.third
+
+        // Phone: area code CONSISTENT with city (expert fix: random area exposed geo-mismatch)
+        val areaCode = CITY_AREA_CODES[city]?.randomOrNull() ?: (rnd.nextInt(800) + 200)
+        val phoneMid = rnd.nextInt(900) + 100
+        val phoneEnd = rnd.nextInt(9000) + 1000
+        val phone = "+1 ($areaCode) $phoneMid-$phoneEnd"
+
+        // Birth date (age 20-55)
+        val cal = Calendar.getInstance()
+        val age = rnd.nextInt(35) + 20
+        cal.add(Calendar.YEAR, -age)
+        cal.set(Calendar.MONTH, rnd.nextInt(12))
+        cal.set(Calendar.DAY_OF_MONTH, rnd.nextInt(27) + 1)
+        val birthDate = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(cal.time)
+
+        // Card generation with Luhn algorithm
+        val cardType = when (rnd.nextInt(4)) {
+            0 -> "Visa"
+            1 -> "Mastercard"
+            2 -> "Amex"
+            else -> "Discover"
+        }
+        val cardNumber = generateValidLuhnCard(cardType)
+        val expMonth = String.format(Locale.US, "%02d", rnd.nextInt(12) + 1)
+        val expYear = (Calendar.getInstance().get(Calendar.YEAR) % 100) + rnd.nextInt(5) + 2
+        val cardExpiry = "$expMonth/$expYear"
+        val cardCvv = String.format(Locale.US, if (cardType == "Amex") "%04d" else "%03d", rnd.nextInt(if (cardType == "Amex") 9000 else 900) + 100)
+        val bankName = BANKS[rnd.nextInt(BANKS.size)]
+
+        return GeneratedIdentity(
+            firstName = firstName,
+            lastName = lastName,
+            fullName = fullName,
+            email = email,
+            phone = phone,
+            username = username,
+            password = password,
+            gender = gender,
+            birthDate = birthDate,
+            address = address,
+            city = city,
+            state = state,
+            postalCode = postalCode,
+            country = "United States",
+            cardNumber = cardNumber,
+            cardExpiry = cardExpiry,
+            cardCvv = cardCvv,
+            cardType = cardType,
+            cardHolder = fullName.uppercase(Locale.US),
+            bankName = bankName
+        )
+    }
+
+    private fun generateValidLuhnCard(cardType: String): String {
+        val (prefix, length) = when (cardType) {
+            "Visa" -> Pair("4", 16)
+            "Mastercard" -> Pair("5${rnd.nextInt(5) + 1}", 16)
+            "Amex" -> Pair("37", 15)
+            else -> Pair("6011", 16)
+        }
+
+        val digits = mutableListOf<Int>()
+        for (ch in prefix) {
+            digits.add(ch - '0')
+        }
+        while (digits.size < length - 1) {
+            digits.add(rnd.nextInt(10))
+        }
+
+        // Calculate Luhn check digit
+        var sum = 0
+        var alt = true
+        for (i in digits.size - 1 downTo 0) {
+            var d = digits[i]
+            if (alt) {
+                d *= 2
+                if (d > 9) d -= 9
+            }
+            sum += d
+            alt = !alt
+        }
+        val checkDigit = (10 - (sum % 10)) % 10
+        digits.add(checkDigit)
+
+        // Format in groups of 4
+        val raw = digits.joinToString("")
+        return raw.chunked(4).joinToString(" ")
+    }
+
+    suspend fun fetchGeoInfo(
+        proxyHost: String? = null,
+        proxyPort: Int? = null,
+        proxyType: String? = null,
+        proxyUser: String? = null,
+        proxyPass: String? = null
+    ): ExtractedInfo = withContext(Dispatchers.IO) {
+        val hasProxy = !proxyHost.isNullOrBlank() && proxyPort != null && proxyPort > 0 && proxyType != "none" && proxyType != "direct"
+
+        var targetExitIp: String? = null
+        if (hasProxy) {
+            val cleanHost = proxyHost.trim()
+            val cleanType = proxyType?.trim()?.lowercase() ?: "socks5"
+            val cleanUser = proxyUser?.trim().orEmpty()
+            val cleanPass = proxyPass?.trim().orEmpty()
+
+            val testRes = testProxyConnection(cleanHost, proxyPort, cleanType, cleanUser, cleanPass, 5000)
+            if (testRes.first) {
+                targetExitIp = testRes.second
+            } else {
+                return@withContext ExtractedInfo(
+                    ip = cleanHost,
+                    country = "United States",
+                    countryCode = "US",
+                    city = "New York",
+                    region = "NY",
+                    street = "",
+                    postalCode = "10001",
+                    timezone = "America/New_York",
+                    language = "en-US",
+                    currency = "USD",
+                    isp = "$proxyHost:$proxyPort",
+                    org = testRes.second,
+                    latitude = 40.7128,
+                    longitude = -74.0060,
+                    isProxy = true
+                )
+            }
+        }
+
+        // Direct fetch for geo details using targetExitIp or current public IP (always via Proxy.NO_PROXY to avoid interference)
+        val client = OkHttpClient.Builder()
+            .proxy(Proxy.NO_PROXY)
+            .connectTimeout(4, TimeUnit.SECONDS)
+            .readTimeout(4, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .retryOnConnectionFailure(true)
+            .build()
+
+        val endpoints = if (!targetExitIp.isNullOrBlank()) {
+            listOf(
+                "https://ipwho.is/$targetExitIp",
+                "https://ipapi.co/$targetExitIp/json/"
+            )
+        } else {
+            listOf(
+                "https://ipwho.is/",
+                "https://api.ipify.org?format=json",
+                "https://api.myip.com",
+                "https://ipapi.co/json/"
+            )
+        }
+
+        for (url in endpoints) {
+            try {
+                val request = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                    .build()
+
+                val response = client.newCall(request).execute()
+                if (response.isSuccessful) {
+                    val body = response.body?.string()?.trim() ?: continue
+                    if (body.isEmpty()) continue
+
+                    val json = try { JSONObject(body) } catch (e: Exception) { null }
+
+                    val rawIp = json?.optString("ip", json.optString("query", "")) 
+                        ?: extractJsonString(body, "ip") 
+                        ?: extractJsonString(body, "query")
+                    val ip = rawIp?.trim().orEmpty().takeIf { it.isNotBlank() } ?: (targetExitIp ?: "")
+                    if (ip.isBlank() || !ip.contains(".")) continue
+
+                    val country = json?.optString("country_name", json.optString("country", "United States"))
+                        ?: extractJsonString(body, "country_name")
+                        ?: extractJsonString(body, "country")
+                        ?: "United States"
+                    val rawCountryCode = json?.optString("country_code", json.optString("countryCode", "US"))
+                        ?: extractJsonString(body, "country_code")
+                        ?: extractJsonString(body, "countryCode")
+                        ?: "US"
+                    val countryCode = rawCountryCode.trim().uppercase(Locale.US).takeIf { it.matches(Regex("^[A-Z]{2}$")) } ?: "US"
+                    val city = json?.optString("city", "New York")
+                        ?: extractJsonString(body, "city")
+                        ?: "New York"
+                    val region = json?.optString("region", json.optString("region_code", "NY"))
+                        ?: extractJsonString(body, "region")
+                        ?: extractJsonString(body, "region_code")
+                        ?: "NY"
+                    val postal = json?.optString("postal", json.optString("zip", "10001"))
+                        ?: extractJsonString(body, "postal")
+                        ?: extractJsonString(body, "zip")
+                        ?: "10001"
+                    val rawTimezone = json?.optJSONObject("timezone")?.optString("id", "")
+                        ?.takeIf { it.isNotBlank() }
+                        ?: json?.optString("timezone", "")?.takeIf { !it.trim().startsWith("{") }
+                        ?: extractJsonString(body, "timezone")
+                        ?: "America/New_York"
+                    val timezone = rawTimezone.trim().takeIf {
+                        it.isNotBlank() && !it.contains("{") && !it.contains("\"") && (it.contains("/") || it.equals("UTC", ignoreCase = true))
+                    } ?: "America/New_York"
+                    val rawCurrency = json?.optJSONObject("currency")?.optString("code", "")
+                        ?.takeIf { it.isNotBlank() }
+                        ?: json?.optString("currency", "USD")?.takeIf { !it.trim().startsWith("{") }
+                        ?: extractJsonString(body, "currency")
+                        ?: "USD"
+                    val currency = rawCurrency.trim().takeIf { it.length in 2..5 && !it.contains("{") } ?: "USD"
+                    val isp = json?.optJSONObject("connection")?.optString("isp", "")
+                        ?.takeIf { it.isNotBlank() }
+                        ?: json?.optString("org", json.optString("isp", "Residential Cloud"))?.takeIf { !it.trim().startsWith("{") }
+                        ?: extractJsonString(body, "org")
+                        ?: extractJsonString(body, "isp")
+                        ?: "Residential Cloud"
+                    val lat = json?.optDouble("latitude", 40.7128)
+                        ?: extractJsonDouble(body, "latitude")
+                        ?: 40.7128
+                    val lon = json?.optDouble("longitude", -74.0060)
+                        ?: extractJsonDouble(body, "longitude")
+                        ?: -74.0060
+
+                    return@withContext ExtractedInfo(
+                        ip = ip,
+                        country = country,
+                        countryCode = countryCode,
+                        city = city,
+                        region = region,
+                        street = "",
+                        postalCode = postal,
+                        timezone = timezone,
+                        language = "en-$countryCode",
+                        currency = currency,
+                        isp = isp,
+                        org = isp,
+                        latitude = lat,
+                        longitude = lon,
+                        isProxy = hasProxy
+                    )
+                }
+            } catch (e: Exception) {
+                // Try next endpoint
+            }
+        }
+
+        if (targetExitIp != null) {
+            return@withContext ExtractedInfo(
+                ip = targetExitIp,
+                country = "United States",
+                countryCode = "US",
+                city = "New York",
+                region = "NY",
+                street = "",
+                postalCode = "10001",
+                timezone = "America/New_York",
+                language = "en-US",
+                currency = "USD",
+                isp = "$proxyHost:$proxyPort",
+                org = "Residential Network",
+                latitude = 40.7128,
+                longitude = -74.0060,
+                isProxy = hasProxy
+            )
+        }
+
+        if (hasProxy) {
+            // When proxy is configured and all endpoints failed, report connection failure
+            return@withContext ExtractedInfo(
+                ip = "Proxy Unreachable",
+                country = "Connection Error",
+                countryCode = "ERR",
+                city = "Offline",
+                region = "",
+                street = "",
+                postalCode = "",
+                timezone = "America/New_York",
+                language = "en-US",
+                currency = "USD",
+                isp = "$proxyHost:$proxyPort",
+                org = "Check host/port/auth",
+                latitude = 40.7128,
+                longitude = -74.0060,
+                isProxy = true
+            )
+        }
+
+        // Direct connection failed (no internet) - NO FAKE IP GENERATION!
+        ExtractedInfo(
+            ip = "Direct (No Internet)",
+            country = "Offline",
+            countryCode = "--",
+            city = "Offline",
+            region = "",
+            street = "",
+            postalCode = "",
+            timezone = "America/New_York",
+            language = "en-US",
+            currency = "USD",
+            isp = "Disconnected",
+            org = "No Internet Connection",
+            latitude = 40.7128,
+            longitude = -74.0060,
+            isProxy = false
+        )
+    }
+
+    /**
+     * Standalone direct proxy socket test for SOCKS4/5 and HTTP/HTTPS proxies.
+     * Does NOT touch LocalSocks5HttpBridge or JVM system proxies.
+     * Returns Triple(isWorking, exitIpOrError, pingMs)
+     */
+    private val fastGeoCache = java.util.concurrent.ConcurrentHashMap<String, Triple<String, String, String>>()
+
+    fun testProxyConnection(
+        host: String,
+        port: Int,
+        type: String,
+        user: String = "",
+        pass: String = "",
+        timeoutMs: Int = 15000
+    ): Triple<Boolean, String, Long> {
+        val diag = testAndDetectProxy(host, port, type, user, pass, timeoutMs)
+        return Triple(diag.isWorking, if (diag.isWorking) diag.exitIp else diag.errorMessage, diag.pingMs)
+    }
+
+    /**
+     * Intelligent multi-protocol proxy tester and auto-detector.
+     * If user specified SOCKS5 but server is HTTP (or vice versa), auto-detects and reports
+     * the working protocol along with verified exit IP, ping, country, city, and Quality Score.
+     */
+    fun testAndDetectProxy(
+        host: String,
+        port: Int,
+        preferredType: String,
+        user: String = "",
+        pass: String = "",
+        timeoutMs: Int = 6000
+    ): ProxyDiagnosticResult {
+        val cleanHost = host.trim()
+        val cleanUser = user.trim()
+        val cleanPass = pass.trim()
+        val pref = preferredType.trim().lowercase().ifBlank { "socks5" }
+
+        if (cleanHost.isBlank() || port !in 1..65535) {
+            return ProxyDiagnosticResult(
+                isWorking = false,
+                exitIp = "",
+                pingMs = 0L,
+                protocol = pref,
+                errorMessage = "عنوان البروكسي أو المنفذ غير صالح",
+                qualityScore = 0
+            )
+        }
+
+        // Step 0: Fast TCP Reachability Check using Proxy.NO_PROXY.
+        // If the TCP port itself is unreachable/closed/timed-out, fail immediately in ~3s instead of
+        // wasting 45-60s trying SOCKS5, SOCKS4, and HTTP sequentially on a dead IP!
+        val tcpTimeout = timeoutMs.coerceIn(2200, 3800)
+        val tcpStart = System.currentTimeMillis()
+        val probeSocket = Socket(Proxy.NO_PROXY)
+        try {
+            probeSocket.connect(InetSocketAddress(cleanHost, port), tcpTimeout)
+        } catch (e: Exception) {
+            val msg = e.localizedMessage ?: e.message ?: "TCP connection failed"
+            val friendly = when {
+                msg.contains("timed out", ignoreCase = true) || msg.contains("Timeout", ignoreCase = true) ->
+                    "انتهت مهلة الاتصال بالخادم ($cleanHost:$port غير متاح)"
+                msg.contains("refused", ignoreCase = true) ->
+                    "تم رفض الاتصال ($cleanHost:$port المنفذ مغلق)"
+                msg.contains("unreachable", ignoreCase = true) || msg.contains("route", ignoreCase = true) ->
+                    "الشبكة أو الخادم غير قابل للوصول ($cleanHost:$port)"
+                else -> "تعذر الوصول إلى $cleanHost:$port ($msg)"
+            }
+            return ProxyDiagnosticResult(
+                isWorking = false,
+                exitIp = "",
+                pingMs = 0L,
+                protocol = pref,
+                errorMessage = friendly,
+                qualityScore = 0
+            )
+        } finally {
+            try { probeSocket.close() } catch (_: Exception) {}
+        }
+        val baseTcpPing = (System.currentTimeMillis() - tcpStart).coerceAtLeast(10L)
+
+        // Step 1: Multi-protocol handshake verification (preferred protocol first, then auto-detect others)
+        val firstProto = when {
+            pref.contains("socks4") -> "socks4"
+            pref.contains("http") -> "http"
+            else -> "socks5"
+        }
+        val protocolsToTry = listOf(firstProto, "socks5", "http", "socks4").distinct()
+        val protoTimeout = timeoutMs.coerceIn(2800, 4800)
+
+        var lastError = "تعذر إتمام مصافحة البروكسي"
+
+        for (proto in protocolsToTry) {
+            val startTime = System.currentTimeMillis()
+            try {
+                val res: Pair<Boolean, String> = when (proto) {
+                    "socks5" -> testSocksSocket(cleanHost, port, cleanUser, cleanPass, protoTimeout)
+                    "socks4" -> testSocks4Socket(cleanHost, port, cleanUser, protoTimeout)
+                    "http" -> testHttpProxy(cleanHost, port, cleanUser, cleanPass, protoTimeout)
+                    else -> Pair(false, "Unknown protocol")
+                }
+                val ping = ((System.currentTimeMillis() - startTime).coerceAtLeast(baseTcpPing)).coerceAtLeast(10L)
+                if (res.first) {
+                    val exitIp = res.second.ifBlank { cleanHost }
+                    val geo = lookupFastGeo(exitIp)
+                    val score = calculateProxyScore(ping, geo.first, geo.third)
+                    return ProxyDiagnosticResult(
+                        isWorking = true,
+                        exitIp = exitIp,
+                        pingMs = ping,
+                        protocol = proto,
+                        country = geo.first,
+                        city = geo.second,
+                        isp = geo.third,
+                        qualityScore = score
+                    )
+                } else {
+                    lastError = res.second
+                }
+            } catch (e: Exception) {
+                lastError = e.localizedMessage ?: e.message ?: "Connection error"
+            }
+        }
+
+        return ProxyDiagnosticResult(
+            isWorking = false,
+            exitIp = "",
+            pingMs = 0L,
+            protocol = pref,
+            errorMessage = lastError,
+            qualityScore = 0
+        )
+    }
+
+    private fun testSocksSocket(
+        cleanHost: String,
+        port: Int,
+        cleanUser: String,
+        cleanPass: String,
+        timeoutMs: Int
+    ): Pair<Boolean, String> {
+        // First try domain-based CONNECT (ATYP = 0x03)
+        val domainTry = testSocks5Internal(cleanHost, port, cleanUser, cleanPass, timeoutMs, useIpv4Target = false)
+        if (domainTry.first) return domainTry
+        // If greeting/auth succeeded but domain CONNECT failed, retry with IPv4 target (ATYP = 0x01)
+        if (!domainTry.second.contains("Auth Required") &&
+            !domainTry.second.contains("فشل المصادقة") &&
+            !domainTry.second.contains("Invalid SOCKS version")
+        ) {
+            val ipv4Try = testSocks5Internal(cleanHost, port, cleanUser, cleanPass, timeoutMs, useIpv4Target = true)
+            if (ipv4Try.first) return ipv4Try
+        }
+        return domainTry
+    }
+
+    private fun testSocks5Internal(
+        cleanHost: String,
+        port: Int,
+        cleanUser: String,
+        cleanPass: String,
+        timeoutMs: Int,
+        useIpv4Target: Boolean
+    ): Pair<Boolean, String> {
+        val socket = Socket(Proxy.NO_PROXY)
+        try {
+            socket.tcpNoDelay = true
+            socket.soTimeout = timeoutMs
+            socket.connect(InetSocketAddress(cleanHost, port), timeoutMs)
+            val sIn = socket.getInputStream()
+            val sOut = socket.getOutputStream()
+
+            // 1. SOCKS5 Greeting (RFC 1928)
+            val hasAuth = cleanUser.isNotBlank() && cleanPass.isNotBlank()
+            if (hasAuth) {
+                sOut.write(byteArrayOf(0x05, 0x02, 0x00, 0x02))
+            } else {
+                sOut.write(byteArrayOf(0x05, 0x01, 0x00))
+            }
+            sOut.flush()
+
+            val greeting = ByteArray(2)
+            var read = 0
+            while (read < 2) {
+                val r = sIn.read(greeting, read, 2 - read)
+                if (r == -1) return Pair(false, "SOCKS5 greeting EOF")
+                read += r
+            }
+
+            if (greeting[0] != 0x05.toByte()) {
+                return Pair(false, "Invalid SOCKS version: ${greeting[0]}")
+            }
+
+            val method = greeting[1].toInt() and 0xFF
+            if (method == 0xFF) {
+                return Pair(false, "البروكسي يتطلب اسم مستخدم وكلمة مرور (Auth Required)")
+            }
+
+            // 2. Authentication subnegotiation (RFC 1929)
+            if (method == 0x02) {
+                if (!hasAuth) {
+                    return Pair(false, "البروكسي يتطلب اسم مستخدم وكلمة مرور (Auth Required)")
+                }
+                val uBytes = cleanUser.toByteArray(Charsets.UTF_8)
+                val pBytes = cleanPass.toByteArray(Charsets.UTF_8)
+                val authReq = ByteArray(3 + uBytes.size + pBytes.size)
+                authReq[0] = 0x01
+                authReq[1] = uBytes.size.toByte()
+                System.arraycopy(uBytes, 0, authReq, 2, uBytes.size)
+                authReq[2 + uBytes.size] = pBytes.size.toByte()
+                System.arraycopy(pBytes, 0, authReq, 3 + uBytes.size, pBytes.size)
+
+                sOut.write(authReq)
+                sOut.flush()
+
+                val authResp = ByteArray(2)
+                read = 0
+                while (read < 2) {
+                    val r = sIn.read(authResp, read, 2 - read)
+                    if (r == -1) return Pair(false, "SOCKS auth EOF")
+                    read += r
+                }
+                if (authResp[1] != 0x00.toByte()) {
+                    return Pair(false, "فشل المصادقة: اسم المستخدم أو كلمة المرور غير صحيحة")
+                }
+            }
+
+            // 3. Connect to IP echo target via SOCKS5 CONNECT
+            val targetDomain = "api.ipify.org"
+            val connReq = if (useIpv4Target) {
+                val ipBytes = try {
+                    java.net.InetAddress.getByName(targetDomain).address.takeIf { it.size == 4 }
+                } catch (_: Exception) {
+                    null
+                } ?: byteArrayOf(1, 1, 1, 1)
+                byteArrayOf(0x05, 0x01, 0x00, 0x01, ipBytes[0], ipBytes[1], ipBytes[2], ipBytes[3], 0x00, 80.toByte())
+            } else {
+                val domainBytes = targetDomain.toByteArray(Charsets.US_ASCII)
+                val req = ByteArray(4 + 1 + domainBytes.size + 2)
+                req[0] = 0x05
+                req[1] = 0x01 // CONNECT
+                req[2] = 0x00
+                req[3] = 0x03 // Domain name
+                req[4] = domainBytes.size.toByte()
+                System.arraycopy(domainBytes, 0, req, 5, domainBytes.size)
+                req[5 + domainBytes.size] = 0x00
+                req[6 + domainBytes.size] = 80.toByte()
+                req
+            }
+
+            sOut.write(connReq)
+            sOut.flush()
+
+            val connHead = ByteArray(4)
+            read = 0
+            while (read < 4) {
+                val r = sIn.read(connHead, read, 4 - read)
+                if (r == -1) break
+                read += r
+            }
+
+            if (read < 4 || connHead[1] != 0x00.toByte()) {
+                val rep = if (read >= 2) connHead[1].toInt() and 0xFF else -1
+                val repMsg = when (rep) {
+                    0x01 -> "خادم البروكسي غير متاح (General SOCKS failure)"
+                    0x02 -> "الاتصال غير مسموح بقواعد البروكسي (Connection not allowed)"
+                    0x03 -> "الشبكة غير قابلة للوصول (Network unreachable)"
+                    0x04 -> "الهدف غير متاح (Host unreachable)"
+                    0x05 -> "تم رفض الاتصال من الهدف (Connection refused)"
+                    else -> "فشل فتح قناة SOCKS5 (رمز الرد: $rep)"
+                }
+                return Pair(false, repMsg)
+            }
+
+            // Drain BND.ADDR and BND.PORT
+            val atyp = connHead[3].toInt() and 0xFF
+            when (atyp) {
+                0x01 -> {
+                    val b = ByteArray(6)
+                    var off = 0
+                    while (off < 6) { val r = sIn.read(b, off, 6 - off); if (r == -1) break; off += r }
+                }
+                0x03 -> {
+                    val len = sIn.read()
+                    if (len > 0) {
+                        val b = ByteArray(len + 2)
+                        var off = 0
+                        while (off < b.size) { val r = sIn.read(b, off, b.size - off); if (r == -1) break; off += r }
+                    }
+                }
+                0x04 -> {
+                    val b = ByteArray(18)
+                    var off = 0
+                    while (off < 18) { val r = sIn.read(b, off, 18 - off); if (r == -1) break; off += r }
+                }
+            }
+
+            // 4. Send HTTP GET to verify traffic and detect exit IP
+            val httpReq = "GET /?format=json HTTP/1.1\r\nHost: api.ipify.org\r\nUser-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n"
+            sOut.write(httpReq.toByteArray(Charsets.US_ASCII))
+            sOut.flush()
+
+            val responseBytes = java.io.ByteArrayOutputStream()
+            val buf = ByteArray(1024)
+            var n: Int
+            while (sIn.read(buf).also { n = it } != -1) {
+                responseBytes.write(buf, 0, n)
+                val curr = responseBytes.toString("UTF-8")
+                if (curr.contains("\r\n\r\n")) {
+                    val bodyPart = curr.substringAfter("\r\n\r\n")
+                    if (bodyPart.contains("}") || bodyPart.length >= 20) {
+                        break
+                    }
+                }
+                if (responseBytes.size() > 4096) break
+            }
+
+            val resStr = responseBytes.toString("UTF-8")
+            val ipMatch = Regex("""\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b""").find(resStr)
+            val detectedIp = ipMatch?.value?.trim()
+
+            return if (!detectedIp.isNullOrBlank() && detectedIp.contains(".")) {
+                Pair(true, detectedIp)
+            } else {
+                Pair(true, cleanHost)
+            }
+        } catch (e: Exception) {
+            val msg = e.localizedMessage ?: e.message ?: "SOCKS5 connection error"
+            val friendlyMsg = if (msg.contains("timed out", ignoreCase = true) || msg.contains("Timeout", ignoreCase = true)) {
+                "انتهت مهلة الاتصال ببروكسي SOCKS5 (Timeout)"
+            } else if (msg.contains("refused", ignoreCase = true)) {
+                "تم رفض الاتصال بالبروكسي (Connection Refused)"
+            } else {
+                msg
+            }
+            return Pair(false, friendlyMsg)
+        } finally {
+            try { socket.close() } catch (_: Exception) {}
+        }
+    }
+
+    private fun testSocks4Socket(
+        cleanHost: String,
+        port: Int,
+        cleanUser: String,
+        timeoutMs: Int
+    ): Pair<Boolean, String> {
+        val socket = Socket(Proxy.NO_PROXY)
+        try {
+            socket.tcpNoDelay = true
+            socket.soTimeout = timeoutMs
+            socket.connect(InetSocketAddress(cleanHost, port), timeoutMs)
+            val sIn = socket.getInputStream()
+            val sOut = socket.getOutputStream()
+
+            val targetDomain = "api.ipify.org"
+            val userBytes = cleanUser.toByteArray(Charsets.US_ASCII)
+
+            // Prefer SOCKS4a remote domain resolution (0.0.0.1 + domain) to prevent local ISP DNS leaks
+            val domainBytes = targetDomain.toByteArray(Charsets.US_ASCII)
+            val req = ByteArray(8 + userBytes.size + 1 + domainBytes.size + 1)
+            req[0] = 0x04
+            req[1] = 0x01 // CONNECT
+            req[2] = 0x00
+            req[3] = 80.toByte()
+            req[4] = 0x00
+            req[5] = 0x00
+            req[6] = 0x00
+            req[7] = 0x01
+            var pos = 8
+            if (userBytes.isNotEmpty()) {
+                System.arraycopy(userBytes, 0, req, pos, userBytes.size)
+                pos += userBytes.size
+            }
+            req[pos++] = 0x00
+            System.arraycopy(domainBytes, 0, req, pos, domainBytes.size)
+            pos += domainBytes.size
+            req[pos] = 0x00
+
+            sOut.write(req)
+            sOut.flush()
+
+            val resp = ByteArray(8)
+            var read = 0
+            while (read < 8) {
+                val r = sIn.read(resp, read, 8 - read)
+                if (r == -1) break
+                read += r
+            }
+            if (read < 8 || resp[1] != 0x5A.toByte()) {
+                return Pair(false, "رفض خادم SOCKS4 الاتصال")
+            }
+
+            val httpReq = "GET /?format=json HTTP/1.1\r\nHost: api.ipify.org\r\nUser-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n"
+            sOut.write(httpReq.toByteArray(Charsets.US_ASCII))
+            sOut.flush()
+
+            val responseBytes = java.io.ByteArrayOutputStream()
+            val buf = ByteArray(1024)
+            var n: Int
+            while (sIn.read(buf).also { n = it } != -1) {
+                responseBytes.write(buf, 0, n)
+                val curr = responseBytes.toString("UTF-8")
+                if (curr.contains("}") || responseBytes.size() > 2048) break
+            }
+            val resStr = responseBytes.toString("UTF-8")
+            val ipMatch = Regex("""\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b""").find(resStr)
+            val detectedIp = ipMatch?.value?.trim() ?: cleanHost
+            return Pair(true, detectedIp)
+        } catch (e: Exception) {
+            return Pair(false, e.localizedMessage ?: "SOCKS4 error")
+        } finally {
+            try { socket.close() } catch (_: Exception) {}
+        }
+    }
+
+    private fun testHttpProxy(
+        cleanHost: String,
+        port: Int,
+        cleanUser: String,
+        cleanPass: String,
+        timeoutMs: Int
+    ): Pair<Boolean, String> {
+        try {
+            val effTimeout = timeoutMs.coerceIn(2500, 4500).toLong()
+            val clientBuilder = OkHttpClient.Builder()
+                .proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress(cleanHost, port)))
+                .connectTimeout(effTimeout, TimeUnit.MILLISECONDS)
+                .readTimeout(effTimeout, TimeUnit.MILLISECONDS)
+                .followRedirects(true)
+
+            if (cleanUser.isNotBlank() && cleanPass.isNotBlank()) {
+                val credential = Credentials.basic(cleanUser, cleanPass)
+                clientBuilder.proxyAuthenticator { _, response ->
+                    response.request.newBuilder()
+                        .header("Proxy-Authorization", credential)
+                        .build()
+                }
+                clientBuilder.addInterceptor { chain ->
+                    val orig = chain.request()
+                    val req = if (orig.header("Proxy-Authorization") == null) {
+                        orig.newBuilder().header("Proxy-Authorization", credential).build()
+                    } else orig
+                    chain.proceed(req)
+                }
+            }
+
+            val client = clientBuilder.build()
+            val testUrls = listOf(
+                "http://api.ipify.org?format=json",
+                "https://api.ipify.org?format=json"
+            )
+
+            for (tUrl in testUrls) {
+                try {
+                    val request = Request.Builder()
+                        .url(tUrl)
+                        .header("User-Agent", "Mozilla/5.0")
+                        .build()
+
+                    val resp = client.newCall(request).execute()
+                    if (resp.isSuccessful) {
+                        val b = resp.body?.string().orEmpty()
+                        val ipMatch = Regex("""\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b""").find(b)
+                        val exitIp = ipMatch?.value?.trim() ?: cleanHost
+                        if (exitIp.isNotBlank() && exitIp.contains(".")) {
+                            return Pair(true, exitIp)
+                        }
+                    } else if (resp.code == 407) {
+                        return Pair(false, "فشل مصادقة بروكسي HTTP (407 Proxy Auth Required)")
+                    }
+                } catch (_: Exception) {}
+            }
+            return Pair(false, "خادم HTTP لم يستجب لطلب الفحص")
+        } catch (e: Exception) {
+            val msg = e.localizedMessage ?: e.message ?: "HTTP proxy failed"
+            val friendlyMsg = if (msg.contains("timed out", ignoreCase = true) || msg.contains("Timeout", ignoreCase = true)) {
+                "انتهت مهلة الاتصال ببروكسي HTTP (Timeout)"
+            } else if (msg.contains("407")) {
+                "فشل مصادقة بروكسي HTTP: تأكد من بيانات الدخول"
+            } else {
+                msg
+            }
+            return Pair(false, friendlyMsg)
+        }
+    }
+
+    fun calculateProxyScore(pingMs: Long, country: String, isp: String): Int {
+        var score = 30
+        if (pingMs in 1..400) score += 40
+        else if (pingMs <= 1000) score += 30
+        else if (pingMs <= 2500) score += 20
+        else if (pingMs <= 5000) score += 10
+
+        val isResidential = isp.contains("telecom", ignoreCase = true) ||
+                isp.contains("cable", ignoreCase = true) ||
+                isp.contains("wireless", ignoreCase = true) ||
+                isp.contains("comcast", ignoreCase = true) ||
+                isp.contains("att", ignoreCase = true) ||
+                isp.contains("verizon", ignoreCase = true) ||
+                isp.contains("charter", ignoreCase = true) ||
+                isp.contains("residential", ignoreCase = true)
+        if (isResidential) score += 20
+        else score += 10
+
+        if (country.isNotBlank() && country != "--") score += 10
+        return score.coerceIn(10, 100)
+    }
+
+    fun lookupFastGeo(ip: String): Triple<String, String, String> {
+        val cleanIp = ip.trim()
+        if (cleanIp.isBlank() || !cleanIp.contains(".")) return Triple("US", "New York", "Residential Cloud")
+        fastGeoCache[cleanIp]?.let { return it }
+
+        val endpoints = listOf(
+            "https://ipwhois.app/json/$cleanIp" to { body: String ->
+                val j = JSONObject(body)
+                Triple(j.optString("country_code", "US").uppercase(), j.optString("city", ""), j.optString("isp", j.optString("org", "")))
+            },
+            "http://ip-api.com/json/$cleanIp" to { body: String ->
+                val j = JSONObject(body)
+                Triple(j.optString("countryCode", "US").uppercase(), j.optString("city", ""), j.optString("isp", j.optString("org", "")))
+            },
+            "https://freeipapi.com/api/json/$cleanIp" to { body: String ->
+                val j = JSONObject(body)
+                Triple(j.optString("countryCode", "US").uppercase(), j.optString("cityName", ""), "Residential")
+            }
+        )
+
+        for ((url, parser) in endpoints) {
+            try {
+                val client = OkHttpClient.Builder()
+                    .proxy(Proxy.NO_PROXY)
+                    .connectTimeout(1800, TimeUnit.MILLISECONDS)
+                    .readTimeout(1800, TimeUnit.MILLISECONDS)
+                    .build()
+                val req = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "Mozilla/5.0")
+                    .build()
+                val resp = client.newCall(req).execute()
+                if (resp.isSuccessful) {
+                    val body = resp.body?.string().orEmpty()
+                    if (body.contains("{")) {
+                        val parsed = parser(body)
+                        if (parsed.first.isNotBlank() && parsed.first.length == 2) {
+                            fastGeoCache[cleanIp] = parsed
+                            return parsed
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        val defaultGeo = Triple("US", "United States", "Residential")
+        fastGeoCache[cleanIp] = defaultGeo
+        return defaultGeo
+    }
+
+    suspend fun checkLeadCPA(userId: String, apiKey: String, ip: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (userId.isBlank() || apiKey.isBlank()) {
+            return@withContext Pair(false, "CPA Grip User ID and API Key required in Settings")
+        }
+
+        val client = OkHttpClient.Builder()
+            .proxy(Proxy.NO_PROXY)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .build()
+
+        val url = "https://www.cpagrip.com/common/lead_check_rss.php?user_id=$userId&key=$apiKey&ip=$ip"
+
+        try {
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "CPAAutomator/1.0")
+                .build()
+
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: ""
+
+            if (!response.isSuccessful) {
+                return@withContext Pair(false, "API Error: HTTP ${response.code}")
+            }
+
+            val hasLead = body.contains("<lead>") ||
+                    body.contains("<status>lead</status>") ||
+                    (body.contains("<item>") && body.contains(ip))
+
+            if (hasLead) {
+                Pair(true, "Lead successfully verified for IP: $ip")
+            } else {
+                Pair(false, "No conversion detected yet for IP: $ip")
+            }
+        } catch (e: Exception) {
+            Pair(false, "Check lead failed: ${e.localizedMessage}")
+        }
+    }
+
+    const val DEFAULT_ASOCKS_URL = "https://asocks-list.org/Lb5lLZADymiWzwGhSVeZyGrcdJcc9m3g.txt?limit=10&type=res&template_id=2&country=US"
+
+    private fun extractJsonString(json: String, key: String): String? {
+        val regex = Regex(""""$key"\s*:\s*"([^"]+)"""")
+        return regex.find(json)?.groupValues?.get(1)
+    }
+
+    private fun extractJsonDouble(json: String, key: String): Double? {
+        val regex = Regex(""""$key"\s*:\s*(-?[0-9]+(?:\.[0-9]+)?)""")
+        return regex.find(json)?.groupValues?.get(1)?.toDoubleOrNull()
+    }
+
+    data class ProxySourcePreset(
+        val title: String,
+        val description: String,
+        val url: String,
+        val protocol: String
+    )
+
+    val PRESET_SOURCES = listOf(
+        ProxySourcePreset(
+            title = "Asocks Whitelist Export (User Link)",
+            description = "Asocks US Residential Export Link (Requires Active Token)",
+            url = DEFAULT_ASOCKS_URL,
+            protocol = "socks5"
+        ),
+        ProxySourcePreset(
+            title = "Free SOCKS5 High-Speed Pool (Daily)",
+            description = "Verified SOCKS5 residential & datacenter proxies",
+            url = "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
+            protocol = "socks5"
+        ),
+        ProxySourcePreset(
+            title = "Free HTTP/HTTPS Web Proxy Pool",
+            description = "Public high-anonymity HTTP web proxies",
+            url = "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
+            protocol = "http"
+        )
+    )
+
+    fun parseProxyLine(line: String, defaultType: String = "socks5"): ProxyItem? {
+        var clean = line.trim()
+        if (clean.isEmpty() || clean.startsWith("#") || clean.startsWith("//")) return null
+
+        var type = defaultType
+        if (clean.startsWith("socks5://", ignoreCase = true)) {
+            type = "socks5"
+            clean = clean.substring("socks5://".length)
+        } else if (clean.startsWith("socks4://", ignoreCase = true)) {
+            type = "socks4"
+            clean = clean.substring("socks4://".length)
+        } else if (clean.startsWith("http://", ignoreCase = true)) {
+            type = "http"
+            clean = clean.substring("http://".length)
+        } else if (clean.startsWith("https://", ignoreCase = true)) {
+            type = "http"
+            clean = clean.substring("https://".length)
+        }
+
+        // Format 1: user:pass@host:port OR host:port@user:pass
+        if (clean.contains("@")) {
+            val atParts = clean.split("@")
+            val part1 = atParts[0].trim()
+            val part2 = atParts.getOrNull(1)?.trim() ?: return null
+
+            val hostTokens = part2.split(":")
+            val portCandidate = hostTokens.getOrNull(1)?.filter { it.isDigit() }?.toIntOrNull()
+            if (hostTokens.size >= 2 && portCandidate != null && portCandidate in 1..65535) {
+                // user:pass@host:port
+                val authTokens = part1.split(":")
+                val user = authTokens.getOrElse(0) { "" }.trim()
+                val pass = authTokens.getOrElse(1) { "" }.trim()
+                val host = hostTokens[0].trim()
+                val country = if (hostTokens.size >= 3 && hostTokens[2].length in 2..4) hostTokens[2].uppercase() else "US"
+                if (host.isNotEmpty()) {
+                    return ProxyItem(host = host, port = portCandidate, type = type, username = user, password = pass, country = country)
+                }
+            } else {
+                // host:port@user:pass
+                val hostTokens1 = part1.split(":")
+                val portCandidate1 = hostTokens1.getOrNull(1)?.filter { it.isDigit() }?.toIntOrNull()
+                if (hostTokens1.size >= 2 && portCandidate1 != null && portCandidate1 in 1..65535) {
+                    val authTokens = part2.split(":")
+                    val user = authTokens.getOrElse(0) { "" }.trim()
+                    val pass = authTokens.getOrElse(1) { "" }.trim()
+                    val host = hostTokens1[0].trim()
+                    val country = if (authTokens.size >= 3 && authTokens[2].length in 2..4) authTokens[2].uppercase() else "US"
+                    if (host.isNotEmpty()) {
+                        return ProxyItem(host = host, port = portCandidate1, type = type, username = user, password = pass, country = country)
+                    }
+                }
+            }
+        }
+
+        // Format 2: delimiters like colon, comma, tab, space, pipe
+        val delimiters = if (clean.contains("\t")) arrayOf("\t")
+        else if (clean.contains("|")) arrayOf("|")
+        else if (clean.contains(",")) arrayOf(",")
+        else if (clean.contains(" ")) arrayOf(" ")
+        else arrayOf(":")
+
+        val tokens = clean.split(*delimiters).map { it.trim() }.filter { it.isNotEmpty() }
+        if (tokens.size >= 2) {
+            // Case A: host:port:user:pass or host:port
+            val portCandidate = tokens[1].filter { it.isDigit() }.toIntOrNull()
+            if (portCandidate != null && portCandidate in 1..65535) {
+                val host = tokens[0]
+                val user = tokens.getOrNull(2) ?: ""
+                val pass = tokens.getOrNull(3) ?: ""
+                val country = if (tokens.size >= 5 && tokens[4].length in 2..4) tokens[4].uppercase() else "US"
+                if (host.isNotEmpty()) {
+                    return ProxyItem(host = host, port = portCandidate, type = type, username = user, password = pass, country = country)
+                }
+            }
+
+            // Case B: user:pass:host:port
+            if (tokens.size >= 4) {
+                val lastPort = tokens[3].filter { it.isDigit() }.toIntOrNull()
+                if (lastPort != null && lastPort in 1..65535) {
+                    val user = tokens[0]
+                    val pass = tokens[1]
+                    val host = tokens[2]
+                    val country = if (tokens.size >= 5 && tokens[4].length in 2..4) tokens[4].uppercase() else "US"
+                    if (host.isNotEmpty()) {
+                        return ProxyItem(host = host, port = lastPort, type = type, username = user, password = pass, country = country)
+                    }
+                }
+            }
+        }
+
+        return null
+    }
+
+    fun parseBulkProxies(text: String, defaultType: String = "socks5"): List<ProxyItem> {
+        val trimmed = text.trim()
+        val result = mutableListOf<ProxyItem>()
+
+        // Check if response is JSON (array or object)
+        if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+            try {
+                if (trimmed.startsWith("[")) {
+                    val arr = JSONArray(trimmed)
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val host = obj.optString("ip", obj.optString("host", obj.optString("server", obj.optString("address", "")))).trim()
+                        val port = obj.optInt("port", obj.optInt("port_socks5", obj.optInt("port_http", 0)))
+                        val type = obj.optString("type", obj.optString("protocol", defaultType)).lowercase()
+                        val user = obj.optString("username", obj.optString("user", obj.optString("login", "")))
+                        val pass = obj.optString("password", obj.optString("pass", obj.optString("pwd", "")))
+                        val country = obj.optString("country", obj.optString("country_code", "US")).uppercase()
+                        if (host.isNotEmpty() && port in 1..65535) {
+                            result.add(ProxyItem(host = host, port = port, type = type, username = user, password = pass, country = country))
+                        }
+                    }
+                } else {
+                    val root = JSONObject(trimmed)
+                    val arr = root.optJSONArray("proxies")
+                        ?: root.optJSONArray("data")
+                        ?: root.optJSONArray("list")
+                        ?: root.optJSONArray("results")
+                        ?: root.optJSONArray("ports")
+                        ?: root.optJSONArray("items")
+                        ?: root.optJSONObject("response")?.optJSONArray("ports")
+                        ?: root.optJSONObject("data")?.optJSONArray("list")
+                    if (arr != null) {
+                        for (i in 0 until arr.length()) {
+                            val obj = arr.optJSONObject(i) ?: continue
+                            val host = obj.optString("ip", obj.optString("host", obj.optString("server", obj.optString("address", "")))).trim()
+                            val port = obj.optInt("port", obj.optInt("port_socks5", obj.optInt("port_http", 0)))
+                            val type = obj.optString("type", obj.optString("protocol", defaultType)).lowercase()
+                            val user = obj.optString("username", obj.optString("user", obj.optString("login", "")))
+                            val pass = obj.optString("password", obj.optString("pass", obj.optString("pwd", "")))
+                            val country = obj.optString("country", obj.optString("country_code", "US")).uppercase()
+                            if (host.isNotEmpty() && port in 1..65535) {
+                                result.add(ProxyItem(host = host, port = port, type = type, username = user, password = pass, country = country))
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                // Fall back to line-by-line text parsing
+            }
+        }
+
+        if (result.isEmpty()) {
+            val lines = trimmed.split(Regex("[\\r\\n;]+|(?=(?:socks[45]?|https?|http)://)"))
+            for (line in lines) {
+                val cleaned = line.trim()
+                if (cleaned.isNotBlank()) {
+                    val p = parseProxyLine(cleaned, defaultType)
+                    if (p != null) {
+                        result.add(p)
+                    }
+                }
+            }
+        }
+        return result
+    }
+
+    suspend fun fetchProxiesFromUrl(url: String, defaultType: String = "socks5"): Result<List<ProxyItem>> = withContext(Dispatchers.IO) {
+        try {
+            var cleanInput = url.trim()
+            if (cleanInput.isEmpty()) {
+                return@withContext Result.failure(IllegalArgumentException("URL أو قائمة البروكسيات فارغة (Input is empty)"))
+            }
+
+            // 1. Direct proxy list detection (User pasted proxy lines directly instead of an HTTP URL)
+            if (!cleanInput.startsWith("http://", ignoreCase = true) &&
+                !cleanInput.startsWith("https://", ignoreCase = true)) {
+                val isDomainUrl = cleanInput.contains("/") &&
+                        (cleanInput.contains(".org") || cleanInput.contains(".com") ||
+                                cleanInput.contains(".net") || cleanInput.contains(".io") ||
+                                cleanInput.contains(".co") || cleanInput.contains(".app") ||
+                                cleanInput.contains(".xyz"))
+                if (isDomainUrl) {
+                    cleanInput = "https://$cleanInput"
+                } else {
+                    val directParsed = parseBulkProxies(cleanInput, defaultType)
+                    if (directParsed.isNotEmpty()) {
+                        return@withContext Result.success(directParsed)
+                    }
+                    cleanInput = "https://$cleanInput"
+                }
+            }
+
+            val client = OkHttpClient.Builder()
+                .proxy(Proxy.NO_PROXY)
+                .connectTimeout(25, TimeUnit.SECONDS)
+                .readTimeout(25, TimeUnit.SECONDS)
+                .followRedirects(true)
+                .followSslRedirects(true)
+                .build()
+
+            val request = Request.Builder()
+                .url(cleanInput)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+                .header("Accept", "*/*")
+                .build()
+
+            val response = client.newCall(request).execute()
+            val rawBody = response.body?.string().orEmpty().trim()
+
+            if (!response.isSuccessful) {
+                val code = response.code
+                val isAsocks = cleanInput.contains("asocks", ignoreCase = true)
+                val isWhitelist = cleanInput.contains("whitelist", ignoreCase = true)
+                val errorMessage = when (code) {
+                    401 -> if (isWhitelist) {
+                        "خطأ مصادقة Asocks Whitelist (401 Unauthorized):\nرابط Whitelist يتطلب تفعيل الـ IP في لوحة Asocks، أو أن الرمز قد انتهت صلاحيته.\n💡 الحل الأسهل والأضمن: ادخل إلى asocks.com واختر وضع (User/Pass) بدلاً من Whitelist لتوليد رابط يعمل مباشرة على أي شبكة وبدون ربط بالـ IP."
+                    } else if (isAsocks) {
+                        "خطأ مصادقة Asocks (401 Unauthorized):\nانتهت صلاحية رمز قائمة Asocks أو أن الرابط غير صالح.\nيرجى فتح لوحة تحكم Asocks (asocks.com) وتجديد رابط التصدير (Export Link) أو استخدام اللصق اليدوي للبروكسيات."
+                    } else {
+                        "HTTP 401 Unauthorized: المفتاح أو الرابط غير مصرح به أو انتهت صلاحيته."
+                    }
+                    403 -> if (isAsocks) {
+                        "رفض الوصول من Asocks (403 Forbidden):\nيرجى التأكد من إضافة عنوان الـ IP إلى Whitelist في حساب Asocks، أو تفعيل وضع User/Pass."
+                    } else {
+                        "HTTP 403 Forbidden: الوصول محظور من قبل الخادم."
+                    }
+                    404 -> "HTTP 404 Not Found: رابط تصدير البروكسيات غير موجود. تأكد من صحة الرابط."
+                    else -> "خطأ HTTP $code: ${response.message}\n${rawBody.take(120)}"
+                }
+                return@withContext Result.failure(Exception(errorMessage))
+            }
+
+            // Inspect if response is JSON error object
+            if (rawBody.startsWith("{")) {
+                try {
+                    val jsonObj = JSONObject(rawBody)
+                    if (jsonObj.has("success") && !jsonObj.optBoolean("success")) {
+                        val msg = jsonObj.optString("message", jsonObj.optString("error", "فشل طلب التصدير"))
+                        return@withContext Result.failure(Exception("استجابة Asocks: $msg (يرجى تجديد التوكن من لوحة Asocks)"))
+                    }
+                    if (jsonObj.has("error") && !jsonObj.isNull("error")) {
+                        val errVal = jsonObj.get("error")
+                        if (errVal !is Boolean || errVal == true) {
+                            val msg = jsonObj.optString("message", errVal.toString())
+                            return@withContext Result.failure(Exception("خطأ من مزود البروكسيات: $msg"))
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+
+            val proxies = parseBulkProxies(rawBody, defaultType)
+            if (proxies.isEmpty()) {
+                val snippet = if (rawBody.length > 100) rawBody.take(100) + "..." else rawBody
+                return@withContext Result.failure(
+                    Exception("لم يتم العثور على أي بروكسيات صالحة في الاستجابة.\nمحتوى الاستجابة: $snippet")
+                )
+            }
+
+            Result.success(proxies)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Generates a 100% internally consistent Persona Facts JSON from the active GeneratedIdentity.
+     * Used by the Contextual Survey & Form AI to ensure that multi-step quizzes, demographic surveys,
+     * and lead forms receive logically coherent answers across every step of a funnel.
+     */
+    fun buildPersonaFactsJson(identity: GeneratedIdentity?): String {
+        return try {
+            val id = identity ?: generateIdentity("US")
+            val birthParts = id.birthDate.split("-")
+            val birthYear = birthParts.getOrNull(0)?.toIntOrNull() ?: 1992
+            val birthMonth = birthParts.getOrNull(1)?.toIntOrNull() ?: 6
+            val birthDay = birthParts.getOrNull(2)?.toIntOrNull() ?: 15
+            val currentYear = Calendar.getInstance().get(Calendar.YEAR)
+            val age = (currentYear - birthYear).coerceIn(21, 65)
+
+            val ageRange = when {
+                age < 25 -> "18-24"
+                age < 35 -> "25-34"
+                age < 45 -> "35-44"
+                age < 55 -> "45-54"
+                else -> "55-64"
+            }
+
+            val maritalStatus = if (age >= 28) "Married" else "Single"
+            val hasChildren = if (age >= 27) "Yes" else "No"
+            val householdSize = if (age >= 28) "3" else "2"
+            val householdIncome = when {
+                age < 26 -> "$50,000 - $74,999"
+                age < 38 -> "$75,000 - $99,999"
+                else -> "$100,000 - $149,999"
+            }
+            val employmentStatus = "Employed Full-Time"
+            val educationLevel = "Bachelor's Degree"
+            val homeOwnership = if (age >= 26) "Own" else "Rent"
+            val creditTier = if (age >= 28) "Good (670-739)" else "Excellent (740+)"
+            val vehicleOwnership = "Own 1-2 Vehicles"
+            val insuranceStatus = "Currently Insured"
+            val shoppingPreference = "Online & In-Store Weekly"
+            val smartphoneOs = "Android"
+            val mobileCarrier = "T-Mobile / Verizon"
+
+            JSONObject().apply {
+                put("fullName", id.fullName)
+                put("firstName", id.firstName)
+                put("lastName", id.lastName)
+                put("email", id.email)
+                put("phone", id.phone)
+                put("gender", id.gender)
+                put("birthDate", id.birthDate)
+                put("birthYear", birthYear.toString())
+                put("birthMonth", String.format(Locale.US, "%02d", birthMonth))
+                put("birthDay", String.format(Locale.US, "%02d", birthDay))
+                put("age", age.toString())
+                put("ageRange", ageRange)
+                put("city", id.city)
+                put("state", id.state)
+                put("postalCode", id.postalCode)
+                put("country", id.country)
+                put("address", id.address)
+                put("maritalStatus", maritalStatus)
+                put("hasChildren", hasChildren)
+                put("householdSize", householdSize)
+                put("householdIncome", householdIncome)
+                put("employmentStatus", employmentStatus)
+                put("educationLevel", educationLevel)
+                put("homeOwnership", homeOwnership)
+                put("creditTier", creditTier)
+                put("vehicleOwnership", vehicleOwnership)
+                put("insuranceStatus", insuranceStatus)
+                put("shoppingPreference", shoppingPreference)
+                put("smartphoneOs", smartphoneOs)
+                put("mobileCarrier", mobileCarrier)
+            }.toString()
+        } catch (e: Exception) {
+            "{}"
+        }
+    }
+}
