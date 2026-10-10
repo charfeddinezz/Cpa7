@@ -63,6 +63,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val offerClickDao = db.offerClickDao()
     private val workTemplateDao = db.workTemplateDao()
 
+    private val intelligenceCoordinator = IntelligenceCoordinator(
+        LocalSocks5HttpBridge,
+        WebProxyManager,
+        IdentityService,
+        SmartAutomationBrain,
+        taskDao,
+        this@AppViewModel
+    )
+
     private var proxySequenceIndex: Int = 0
 
     private val prefs = application.getSharedPreferences("cpa_automator_prefs", Context.MODE_PRIVATE)
@@ -1944,6 +1953,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (_automationState.value.isRunning) {
             stopAutomation()
         } else {
+            // IntelligenceCoordinator pre-flight analysis before starting
+            intelligenceCoordinator.analyzeProxyRecursive()
+            intelligenceCoordinator.analyzeIdentityRecursive()
+            intelligenceCoordinator.analyzeAutomationRecursive()
+
+            // Issue any adaptive commands from previous cycle's analysis
+            val lastInsight = intelligenceCoordinator.lastCrossLayerInsight
+            if (lastInsight.riskLevel == "critical" || lastInsight.riskLevel == "high") {
+                addLog("warning", "⚠️ استخبارات متقاطعة: مستوى خطر ${lastInsight.riskLevel} - سيتم تطبيق تدابير وقائية")
+                // Apply preventive measures from previous session
+                if (lastInsight.recommendedActions.any { it == "rotate_proxy_immediately" }) {
+                    intelligenceCoordinator.proxyBridge.rotateIfConfigured()
+                    addLog("info", "✅ تم دوران البروكسي تلقائياً كإجراء وقائي")
+                }
+                if (lastInsight.recommendedActions.any { it == "rotate_identity_to_match_proxy" }) {
+                    identityService.scheduleIdentityRotation()
+                    addLog("info", "✅ تم جدولة دوران الهوية لتطابق البروكسي")
+                }
+            }
+
             startAutomation()
         }
     }

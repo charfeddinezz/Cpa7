@@ -20,5 +20,7 @@ data class GeneratedIdentity(
     val cardCvv: String = "742",
     val cardType: String = "Visa",
     val cardHolder: String = "JOHN DOE",
-    val bankName: String = "Chase Bank"
+    val bankName: String = "Chase Bank",
+    /** Flag to trigger identity rotation after current task completes */
+    val rotateAfterTask: Boolean = false
 )

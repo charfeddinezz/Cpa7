@@ -357,7 +357,8 @@ object IdentityService {
             cardCvv = cardCvv,
             cardType = cardType,
             cardHolder = fullName.uppercase(Locale.US),
-            bankName = bankName
+            bankName = bankName,
+            rotateAfterTask = false
         )
     }
 
