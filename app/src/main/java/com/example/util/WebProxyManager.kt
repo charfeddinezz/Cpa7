@@ -292,6 +292,7 @@ object WebProxyManager {
                 wv.evaluateJavascript(
                     """
                     try {
+                        try { window.name = ''; } catch(e0) {}
                         if (window.localStorage) window.localStorage.clear();
                         if (window.sessionStorage) window.sessionStorage.clear();
                         if ('caches' in window) {

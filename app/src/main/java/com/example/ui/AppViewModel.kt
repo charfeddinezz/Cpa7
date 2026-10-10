@@ -173,6 +173,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // ── ذاكرة مستمرة للذكاء المتقاطع (بروتوكولات + فئات + تعزيز) ──
     private val intelPrefsKey: String = "cross_layer_intel_v1"
     private val categoryPrefsKey: String = "category_intel_v1"
+    private val geoPrefsKey: String = "geo_intel_v1"
 
     private fun persistIntelligence() {
         try {
@@ -185,6 +186,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 catObj.put(k, "${v.first}/${v.second}")
             }
             prefs.edit().putString(categoryPrefsKey, catObj.toString()).apply()
+            val geoObj = org.json.JSONObject()
+            for ((k, v) in com.example.util.GeoIntel.snapshot()) {
+                geoObj.put(k, "${v.first}/${v.second}")
+            }
+            prefs.edit().putString(geoPrefsKey, geoObj.toString()).apply()
         } catch (_: Exception) {}
     }
 
@@ -214,6 +220,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 if (map.isNotEmpty()) TaskCategoryPlanner.restoreCategoryStats(map)
+            }
+            val geoRaw = prefs.getString(geoPrefsKey, "") ?: ""
+            if (geoRaw.isNotBlank()) {
+                val obj = org.json.JSONObject(geoRaw)
+                val map = mutableMapOf<String, Pair<Int, Int>>()
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val parts = obj.optString(k, "0/0").split("/")
+                    if (parts.size == 2) {
+                        map[k] = Pair(parts[0].toIntOrNull() ?: 0, parts[1].toIntOrNull() ?: 0)
+                    }
+                }
+                if (map.isNotEmpty()) com.example.util.GeoIntel.restore(map)
             }
         } catch (_: Exception) {}
     }
@@ -1310,6 +1330,100 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private var selfTestDoneThisSession: Boolean = false
+    private var selfTestReloadedThisSession: Boolean = false
+
+    /** اختبار الدرع الذاتي على الصفحة الحية (غير حاجب — النتيجة عبر callback) */
+    fun runShieldSelfTest() {
+        try {
+            val geo = _extractedInfo.value
+            _browserCommand.value = BrowserCommand.RunShieldSelfTest(
+                AutomationScriptBuilder.buildShieldSelfTestScript(
+                    geo.language.ifBlank { "en-US" },
+                    geo.timezone.ifBlank { "America/New_York" }
+                )
+            )
+            addLog("info", "🧪 [اختبار الدرع الذاتي]: فحص ~30 إشارة بصمة داخل الصفحة الحية كما يراها أي موقع فاحص...")
+        } catch (_: Exception) {}
+    }
+
+    private val loggedSurveillanceHosts = mutableSetOf<String>()
+
+    /** هل هذا المضيف فاحص معادٍ؟ — يقرأه معترض الطلبات لتشديد الرقابة */
+    fun isHostileHost(host: String): Boolean {
+        return try { intelligenceCoordinator.isHostileHost(host) } catch (_: Exception) { false }
+    }
+
+    /** معترض الطلبات حظر متتبع مراقبة — سجل مختصر + عدّاد المنسق */
+    fun onSurveillanceBlocked(domain: String) {
+        val clean = domain.trim().lowercase().take(80)
+        if (clean.isBlank()) return
+        intelligenceCoordinator.noteSurveillanceBlock(clean)
+        synchronized(loggedSurveillanceHosts) {
+            if (loggedSurveillanceHosts.add(clean)) {
+                addLog("info", "🛡️ [اعتراض صارم]: حُظر $clean عن تسجيل الجلسة (أول مرة) — باقي الحظر يُحتسب بصمت.")
+            }
+        }
+    }
+
+    fun onShieldSelfTestResult(rawJson: String?) {
+        try {
+            val wrapped = "[${rawJson ?: "null"}]"
+            val decoded = try {
+                org.json.JSONArray(wrapped).optString(0, "")
+            } catch (_: Exception) { "" }
+            if (decoded.isBlank() || decoded == "null") {
+                addLog("warning", "🧪 [اختبار الدرع الذاتي]: لا نتيجة (الصفحة لم تنفذ الفحص — تحقق من حقن الدرع).")
+                return
+            }
+            val obj = org.json.JSONObject(decoded)
+            val passed = obj.optInt("passed", 0)
+            val failed = obj.optInt("failed", 0)
+            val failsArr = obj.optJSONArray("failures")
+            val fails = StringBuilder()
+            if (failsArr != null) {
+                for (i in 0 until minOf(failsArr.length(), 8)) {
+                    if (fails.isNotEmpty()) fails.append("، ")
+                    fails.append(failsArr.optString(i, ""))
+                }
+            }
+            intelligenceCoordinator.noteSelfTest(passed, failed, fails.toString())
+            // Critical: webdriver visible = document-start injection missed (SPA?) — one therapeutic reload
+            val failsStr = fails.toString()
+            if (!selfTestReloadedThisSession && failsStr.contains("webdriver_false")) {
+                selfTestReloadedThisSession = true
+                addLog("warning", "🛡️ [إعادة حقن علاجية]: الدرع لم يُحقن في هذه الصفحة (webdriver ظاهر!) — إعادة تحميل واحدة لإعادة الحقن.")
+                _browserCommand.value = BrowserCommand.Reload
+            }
+        } catch (e: Exception) {
+            addLog("warning", "🧪 [اختبار الدرع الذاتي]: تعذر تحليل النتيجة: ${e.message}")
+        }
+    }
+
+    /** قياس الجسر من الصفحة: الموقع يفحص البصمة — سجل + غذّ المنسق */
+    fun onShieldTelemetry(jsonPayload: String) {
+        try {
+            val obj = org.json.JSONObject(jsonPayload)
+            val score = obj.optInt("score", 0)
+            val url = obj.optString("u", "").take(80)
+            val topArr = obj.optJSONArray("top")
+            val top = StringBuilder()
+            if (topArr != null) {
+                for (i in 0 until minOf(topArr.length(), 4)) {
+                    if (top.isNotEmpty()) top.append("، ")
+                    top.append(topArr.optString(i, ""))
+                }
+            }
+            val host = try { java.net.URI(url).host ?: url.take(30) } catch (_: Exception) { url.take(30) }
+            addLog(
+                if (score >= 15) "warning" else "info",
+                "🛰️ [جسر الجهاز]: الموقع يفحص البصمة (نقاط=$score) | الأكثر لمساً: $top | الصفحة: $host | الحالة: كل الطلبات حُوّلت للمزيف ✅",
+                _automationState.value.currentTaskName
+            )
+            intelligenceCoordinator.noteShieldProbe(score, top.toString(), host)
+        } catch (_: Exception) {}
+    }
+
     fun onNewTabInteractionCompleted(tabId: String, currentUrl: String, details: String) {
         _automationState.update {
             it.copy(newTabActionStatus = "اكتملت المحاكاة في $tabId: $details")
@@ -1925,13 +2039,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 com.example.util.LocalSocks5HttpBridge.protocolSuccessRate(p.type.ifBlank { "socks5" })
             } catch (_: Exception) { 0.5 }
             val crossFactor = 0.7 + (applyRate * 0.2) + (protoRate * 0.1)
-            return SmartAutomationBrain.scoreProxyForTask(
+            // ذكاء الجغرافيا: دولة ذات تحويل مرتفع تُعزز (0.85..1.15)، والمنخفضة تُخفض
+            val geoRate = try {
+                com.example.util.GeoIntel.rate(p.country.ifBlank { "US" })
+            } catch (_: Exception) { 0.5 }
+            val geoFactor = 0.85 + (geoRate * 0.3)
+            SmartAutomationBrain.scoreProxyForTask(
                 successRate = if (p.status == "working") successRate.coerceAtLeast(0.6) else successRate,
                 pingMs = p.lastPingMs,
                 failCount = p.failCount,
                 lastFailAgeMin = lastFailAgeMin,
                 qualityScore = p.score
-            ) * crossFactor
+            ) * crossFactor * geoFactor
         }
         val best = candidates.maxByOrNull { crossScore(it) }
         // سجل القرار: أي بروكسي اختير ولماذا — ماذا فعلنا وماذا سنتوقع
@@ -1941,9 +2060,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val applyRate = try {
                 (com.example.util.WebProxyManager.upstreamSuccessRate(p.host, p.port) * 100).toInt()
             } catch (_: Exception) { 50 }
+            val geoRate = try {
+                (com.example.util.GeoIntel.rate(p.country.ifBlank { "US" }) * 100).toInt()
+            } catch (_: Exception) { 50 }
             addLog(
                 "info",
-                "🧠 [اختيار البروكسي]: ${p.host}:${p.port} [${p.type.uppercase()}] | نجاح مهام=$successRate% | نجاح تطبيق=$applyRate% | ping=${p.lastPingMs}ms | التوقع: مسار مستقر لهذه الدورة"
+                "🧠 [اختيار البروكسي]: ${p.host}:${p.port} [${p.type.uppercase()}] (${p.country.ifBlank { "??" }}) | نجاح مهام=$successRate% | نجاح تطبيق=$applyRate% | تحويل الدولة=$geoRate% | ping=${p.lastPingMs}ms | التوقع: مسار مستقر لهذه الدورة"
             )
         }
         return best
@@ -2195,6 +2317,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             brainMemory = SmartAutomationBrain.initialMemory()
             lastSmartDecision = null
             restoreLearning()
+            selfTestDoneThisSession = false
+            selfTestReloadedThisSession = false
             automationStartTime = System.currentTimeMillis()
             _automationState.update {
                 it.copy(
@@ -2787,7 +2911,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     val texts = enabledClicks.map { it.text }
                     val counts = enabledClicks.associate { it.text to it.clickCount }
-                    val pickIdx = SmartAutomationBrain.selectOfferText(texts, counts, epsilon = 0.15)
+                    val impressions = enabledClicks.associate { it.text to it.showCount }
+                    val pickIdx = SmartAutomationBrain.selectOfferText(texts, counts, epsilon = 0.15, impressions = impressions)
                         .coerceIn(0, enabledClicks.size - 1)
                     enabledClicks.sortedBy { texts.indexOf(it.text) }[pickIdx]
                 }
@@ -2826,9 +2951,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 phase = "browser",
                 humanActionStatusAr = "🌐 فتح الرابط وتحميل الموقع في المتصفح...",
-                phaseDetail = if (nextClickTarget != null) "Navigating to ${task.url} [Target: $nextClickTarget]..." else "Navigating to ${task.url}..."
+                phaseDetail = if (nextClickTarget != null) "Navigating to ${task.url} [Target: $nextClickTarget]..." else "Navigating to ${task.url}...",
+                shieldVersionApplied = AutomationScriptBuilder.SHIELD_VERSION
             )
         }
+        addLog(
+            "info",
+            "🛡️ [الدرع v${AutomationScriptBuilder.SHIELD_VERSION} + الجسر]: بصمة جهاز حقيقي مزروعة (منطقة=${geo.timezone} | لغة=${geo.language} | بذرة=${_automationState.value.fingerprintSeed} | UA=${ua.take(44)}...) — الجسر يفهم كل طلب (كاميرا/موقع/خطوط/ذاكرة/عمال) ويحوله للمزيف",
+            task.name
+        )
 
         val isTrackingUrl = task.url.contains(".php", ignoreCase = true) ||
             task.url.contains("id=", ignoreCase = true) ||
@@ -2862,6 +2993,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             complexity = 2,
             taskName = task.name
         )
+
+        // 🧪 Shield self-test once per session on the live settled page (non-blocking)
+        if (!selfTestDoneThisSession) {
+            selfTestDoneThisSession = true
+            runShieldSelfTest()
+        }
 
         // If custom work template is attached, trigger template execution
         if (!templateStepsJson.isNullOrBlank()) {
@@ -2952,13 +3089,28 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     it.host.equals(s.proxyHost.trim(), ignoreCase = true) &&
                         it.port.toString() == s.proxyPort.trim()
                 }
+                // ذكاء الجغرافيا: سجل تحويل هذه الدولة (من البروكسي الفعلي أو الجغرافيا)
+                val runCountry = match?.country?.takeIf { it.isNotBlank() } ?: geo.countryCode
+                com.example.util.GeoIntel.record(runCountry, converted)
                 if (match != null) {
-                    if (converted) {
+                    val st = _automationState.value
+                    val burnReason = when {
+                        converted -> null
+                        st.isPageBlocked -> "حظر صفحة 🚫 — البروكسي محروق"
+                        st.isCaptchaPresent -> "كابتشا 🧩 — البروكسي مثار حوله شك"
+                        st.stuckCount >= 4 -> "تعلق متكرر (${st.stuckCount}) — مسار مسموم محتمل"
+                        else -> "بلا تحويل"
+                    }
+                    if (burnReason == null) {
                         proxyDao.recordProxySuccess(match.id)
                         addLog("success", "🌐 [تقييم البروكسي]: ${match.host}:${match.port} سُجل نجاح ✅ (نجاحات=${match.successCount + 1}) — سيُفضل في الاختيار القادم.", task.name)
                     } else {
                         proxyDao.recordProxyFailure(match.id)
-                        addLog("warning", "🌐 [تقييم البروكسي]: ${match.host}:${match.port} سُجل فشل ⚠️ (فشل=${match.failCount + 1}) — سينخفض ترتيبه.", task.name)
+                        // الحرق المضاعف: البروكسي المرتبط بحظر/كابتشا يُعاقب مرتين لعزله سريعاً
+                        if (st.isPageBlocked || st.isCaptchaPresent) {
+                            proxyDao.recordProxyFailure(match.id)
+                        }
+                        addLog("warning", "🌐 [تقييم البروكسي]: ${match.host}:${match.port} سُجل فشل ⚠️ ($burnReason) — سينخفض ترتيبه.", task.name)
                     }
                 }
             }
@@ -3215,6 +3367,7 @@ sealed class BrowserCommand {
     object GenerateAutoTemplate : BrowserCommand()
     data class ExecuteWorkTemplate(val stepsJson: String) : BrowserCommand()
     data class OpenInNewTab(val url: String, val title: String = "Offer") : BrowserCommand()
+    data class RunShieldSelfTest(val script: String) : BrowserCommand()
     object ScanAndExtractLockerOffers : BrowserCommand()
     data class ExecuteBrainAction(
         val executionMode: String,

@@ -125,6 +125,7 @@ class WebAppInterface(
     private val onLockerStatus: ((String) -> Unit)? = null,
     private val onLockerOffersExtracted: ((String) -> Unit)? = null,
     private val onHumanActionStatus: ((String) -> Unit)? = null,
+    private val onShieldTelemetry: ((String) -> Unit)? = null,
     private val isLockerScanRequestedProvider: (() -> Boolean)? = null,
     private val isRunningProvider: (() -> Boolean)? = null,
     private val activeClickTextProvider: (() -> String?)? = null,
@@ -227,6 +228,11 @@ class WebAppInterface(
     fun onHumanActionStatus(statusAr: String) {
         mainHandler.post { onHumanActionStatus?.invoke(statusAr) }
     }
+
+    @JavascriptInterface
+    fun onShieldTelemetry(jsonPayload: String) {
+        mainHandler.post { onShieldTelemetry?.invoke(jsonPayload) }
+    }
 }
 
 /**
@@ -283,6 +289,10 @@ fun BrowserScreen(
     onGoToTasks: (() -> Unit)? = null,
     onGoToOfferClick: (() -> Unit)? = null,
     onHumanActionStatus: ((String) -> Unit)? = null,
+    onShieldTelemetry: ((String) -> Unit)? = null,
+    onShieldSelfTestResult: ((String) -> Unit)? = null,
+    onIsHostileHost: ((String) -> Boolean)? = null,
+    onSurveillanceBlocked: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -488,6 +498,19 @@ fun BrowserScreen(
                 tabItem.docStartHandlers.add(
                     WebViewCompat.addDocumentStartJavaScript(
                         wv,
+                        AutomationScriptBuilder.buildDeviceBridgeScript(
+                            latitude = extractedInfo.latitude,
+                            longitude = extractedInfo.longitude,
+                            userAgent = currentUa,
+                            fingerprintSeed = automationState.fingerprintSeed,
+                            language = extractedInfo.language
+                        ),
+                        setOf("*")
+                    )
+                )
+                tabItem.docStartHandlers.add(
+                    WebViewCompat.addDocumentStartJavaScript(
+                        wv,
                         AutomationScriptBuilder.buildTimezoneScript(extractedInfo.timezone, extractedInfo.language),
                         setOf("*")
                     )
@@ -540,6 +563,10 @@ fun BrowserScreen(
                 ?: tabItem.initialReferer?.takeIf { it.isNotBlank() }
                 ?: "https://www.google.com/"
             val headers = mutableMapOf("Referer" to effectiveRef)
+            // Shield: Accept-Language header matches navigator.language (else header-vs-JS mismatch = bot signal)
+            extractedInfo.language.trim().takeIf { it.matches(Regex("^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})?$")) }?.let {
+                headers["Accept-Language"] = it
+            }
             webView.post {
                 try {
                     webView.loadUrl(resolved, headers)
@@ -751,6 +778,20 @@ fun BrowserScreen(
                         AutomationScriptBuilder.buildAutoTemplateGeneratorScript(),
                         null
                     )
+                }
+                is BrowserCommand.RunShieldSelfTest -> {
+                    activeTab.webView?.let { wv ->
+                        try {
+                            wv.evaluateJavascript(cmd.script, null)
+                            delay(2600)
+                            wv.evaluateJavascript(
+                                "JSON.stringify(window.__cpaSelfTestResult || null)",
+                                android.webkit.ValueCallback<String?> { v ->
+                                    onShieldSelfTestResult?.invoke(v.orEmpty())
+                                }
+                            )
+                        } catch (_: Exception) {}
+                    }
                 }
                 is BrowserCommand.ExecuteWorkTemplate -> {
                     activeTab.webView?.evaluateJavascript(
@@ -1539,6 +1580,9 @@ fun BrowserScreen(
                                         onHumanActionStatus = { statusAr ->
                                             onHumanActionStatus?.invoke(statusAr)
                                         },
+                                        onShieldTelemetry = { jsonPayload ->
+                                            onShieldTelemetry?.invoke(jsonPayload)
+                                        },
                                         isLockerScanRequestedProvider = {
                                             isScanningLocker || System.currentTimeMillis() < lockerScanRequestedUntil
                                         },
@@ -1654,10 +1698,15 @@ fun BrowserScreen(
                                              android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(popupRelay, true)
                                          } catch (e: Exception) {}
 
-                                         popupRelay.webViewClient = object : MainActivity.CustomWebViewClient(
-                                             proxyUserProvider = { settings.proxyUser },
-                                             proxyPassProvider = { settings.proxyPass }
-                                         ) {
+                                          popupRelay.webViewClient = object : MainActivity.CustomWebViewClient(
+                                              proxyUserProvider = { settings.proxyUser },
+                                              proxyPassProvider = { settings.proxyPass },
+                                              acceptLanguageProvider = { extractedInfo.language },
+                                              bridgePortProvider = { com.example.util.LocalSocks5HttpBridge.localPort },
+                                              strictModeProvider = { automationState.intelRiskLevel != "low" },
+                                              isHostileHost = { h -> onIsHostileHost?.invoke(h) == true },
+                                              onSurveillanceBlocked = { d -> onSurveillanceBlocked?.invoke(d) }
+                                          ) {
                                              override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean =
                                                  openPopup(request?.url?.toString())
 
@@ -1680,10 +1729,25 @@ fun BrowserScreen(
                                      }
                                 }
 
-                                webViewClient = object : MainActivity.CustomWebViewClient(
-                                    proxyUserProvider = { settings.proxyUser },
-                                    proxyPassProvider = { settings.proxyPass },
-                                    onPageStartedCallback = { view, url, _ ->
+                                 webViewClient = object : MainActivity.CustomWebViewClient(
+                                     proxyUserProvider = { settings.proxyUser },
+                                     proxyPassProvider = { settings.proxyPass },
+                                     acceptLanguageProvider = { extractedInfo.language },
+                                     bridgePortProvider = { com.example.util.LocalSocks5HttpBridge.localPort },
+                                     strictModeProvider = { automationState.intelRiskLevel != "low" },
+                                     isHostileHost = { h -> onIsHostileHost?.invoke(h) == true },
+                                     onSurveillanceBlocked = { d -> onSurveillanceBlocked?.invoke(d) },
+                                     onMainFrameFinalUrl = { finalUrl ->
+                                         // Header-corrected load followed redirects: sync tab URL with reality
+                                         tabItem.webView?.post {
+                                             tabItem.url = finalUrl
+                                             if (tabItem.id == activeTabId) {
+                                                 currentDisplayUrl = finalUrl
+                                                 urlInput = finalUrl
+                                             }
+                                         }
+                                     },
+                                     onPageStartedCallback = { view, url, _ ->
                                         tabItem.navigationSeq++
                                         tabItem.isLoading = true
                                         tabItem.lastError = null
@@ -1970,7 +2034,10 @@ fun BrowserScreen(
                                         val resolvedUrl = MainActivity.CustomWebViewClient.resolveSpecialSchemeUrl(rawUrl)
                                         if (!resolvedUrl.isNullOrBlank()) {
                                             if (request.isForMainFrame) {
-                                                val headers = mapOf("Referer" to (view?.url?.takeIf { it.startsWith("http") } ?: "https://www.google.com/"))
+                                                val headers = mutableMapOf("Referer" to (view?.url?.takeIf { it.startsWith("http") } ?: "https://www.google.com/"))
+                                                extractedInfo.language.trim().takeIf { it.matches(Regex("^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})?$")) }?.let {
+                                                    headers["Accept-Language"] = it
+                                                }
                                                 view?.post { view.loadUrl(resolvedUrl, headers) }
                                             }
                                             return true

@@ -158,5 +158,7 @@ data class AutomationState(
     // ── Cross-layer intelligence telemetry (يكتبها المنسق، تقرأها الواجهة) ──
     val intelRiskLevel: String = "low", // low/medium/high/critical
     val intelPattern: String = "mixed_pattern",
-    val intelUpdatedAt: Long = 0L
+    val intelUpdatedAt: Long = 0L,
+    // ── Shield telemetry: نسخة الدرع المحقونة في الجلسة (0 = لم تُحقن بعد) ──
+    val shieldVersionApplied: Int = 0
 )

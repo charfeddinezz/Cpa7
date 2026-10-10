@@ -146,6 +146,16 @@ fun InfoScreen(
             SectionCard(title = "SESSION & ANTI-DETECT TELEMETRY", icon = Icons.Default.Visibility) {
                 InfoRow("Session Status", if (automationState.isRunning) "Running (${automationState.phase})" else "Standby")
                 InfoRow("Fingerprint Seed", "#${automationState.fingerprintSeed}", isMonospace = true)
+                InfoRow(
+                    "Shield Version",
+                    if (automationState.shieldVersionApplied > 0) "v${automationState.shieldVersionApplied} ${if (automationState.shieldVersionApplied >= com.example.service.AutomationScriptBuilder.SHIELD_VERSION) "✅" else "⚠️ update on reload"}" else "Not injected yet",
+                    isMonospace = true
+                )
+                InfoRow(
+                    "Intel Risk / Pattern",
+                    "${automationState.intelRiskLevel} · ${automationState.intelPattern}",
+                    isMonospace = true
+                )
                 InfoRow("Active Target", automationState.currentTaskName ?: "Manual / Direct Smartlink")
                 InfoRow(
                     "Current URL",

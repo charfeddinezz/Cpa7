@@ -98,12 +98,21 @@ class MainActivity : ComponentActivity() {
         private val proxyPassProvider: () -> String = { "" },
         private val onPageStartedCallback: ((WebView?, String?, Bitmap?) -> Unit)? = null,
         private val onPageFinishedCallback: ((WebView?, String?) -> Unit)? = null,
-        private val onErrorCallback: ((WebView?, WebResourceRequest?, WebResourceError?) -> Unit)? = null
+        private val onErrorCallback: ((WebView?, WebResourceRequest?, WebResourceError?) -> Unit)? = null,
+        // ── Shield intel: لغة مقبولة موحدة مع navigator.language + منفذ الجسر + مزامنة الرابط النهائي ──
+        private val acceptLanguageProvider: () -> String = { "" },
+        private val bridgePortProvider: () -> Int = { 0 },
+        private val onMainFrameFinalUrl: ((String) -> Unit)? = null,
+        // ── Strict intelligence: وضع صارم عند الخطر + عدائية المضيف + تبليغ الحظر ──
+        private val strictModeProvider: () -> Boolean = { false },
+        private val isHostileHost: (String) -> Boolean = { false },
+        private val onSurveillanceBlocked: ((String) -> Unit)? = null
     ) : WebViewClient() {
 
         /**
          * Overrides shouldInterceptRequest to block WebRTC STUN/TURN server connections,
-         * ICE candidate exchanges, and background probe sockets.
+         * ICE candidate exchanges, and background probe sockets — plus header-corrected
+         * main-frame loads so Accept-Language NEVER contradicts navigator.language.
          */
         override fun shouldInterceptRequest(
             view: WebView?,
@@ -114,7 +123,122 @@ class MainActivity : ComponentActivity() {
                 Log.w(TAG, "Shield intercepted and blocked WebRTC STUN/TURN traffic: $uri")
                 return createBlockedWebResourceResponse()
             }
+            if (isSurveillanceTraffic(uri, request.isForMainFrame)) {
+                val domain = (uri.host ?: uri.toString()).lowercase()
+                Log.w(TAG, "Shield strictly blocked session-replay surveillance: $uri")
+                try { onSurveillanceBlocked?.invoke(domain) } catch (_: Exception) {}
+                return createBlockedWebResourceResponse()
+            }
+            if (request.isForMainFrame && request.method.equals("GET", ignoreCase = true)) {
+                try {
+                    headerCorrectedMainFrame(request)?.let { return it }
+                } catch (_: Exception) {
+                }
+            }
             return super.shouldInterceptRequest(view, request)
+        }
+
+        /**
+         * Re-executes a main-frame GET with Accept-Language forced to the spoofed locale,
+         * following redirects manually (cookies synced) so smartlink chains keep working.
+         * Returns null when no correction is needed or on any doubt (fail-open to WebView).
+         */
+        private fun headerCorrectedMainFrame(request: WebResourceRequest): WebResourceResponse? {
+            val want = acceptLanguageProvider().trim()
+            if (want.isBlank() || want.contains("{")) return null
+            val scheme = request.url.scheme?.lowercase() ?: return null
+            if (scheme != "http" && scheme != "https") return null
+            val current = request.requestHeaders["Accept-Language"] ?: request.requestHeaders["accept-language"]
+            if (!current.isNullOrBlank() && current.equals(want, ignoreCase = true)) return null
+
+            var urlStr = request.url.toString()
+            val baseHeaders = request.requestHeaders.toMutableMap()
+            baseHeaders.remove("Accept-Language")
+            baseHeaders.remove("accept-language")
+            baseHeaders["Accept-Language"] = want
+            baseHeaders.remove("Content-Length")
+            baseHeaders.remove("content-length")
+            baseHeaders.remove("Host")
+            baseHeaders.remove("host")
+            // App-identity leak: WebView tags requests with the host app package — strip it
+            baseHeaders.remove("X-Requested-With")
+            baseHeaders.remove("x-requested-with")
+
+            val bridgePort = bridgePortProvider()
+            val proxy = if (bridgePort in 1..65535) {
+                java.net.Proxy(java.net.Proxy.Type.HTTP, java.net.InetSocketAddress("127.0.0.1", bridgePort))
+            } else {
+                java.net.Proxy.NO_PROXY
+            }
+
+            var hops = 0
+            while (hops < 6) {
+                hops++
+                val conn = (java.net.URL(urlStr).openConnection(proxy) as java.net.HttpURLConnection)
+                try {
+                    conn.instanceFollowRedirects = false
+                    conn.connectTimeout = 15000
+                    conn.readTimeout = 20000
+                    conn.requestMethod = "GET"
+                    view_ua(request).takeIf { it.isNotBlank() }?.let {
+                        conn.setRequestProperty("User-Agent", it)
+                    }
+                    for ((k, v) in baseHeaders) {
+                        if (k.equals("User-Agent", ignoreCase = true)) continue
+                        try { conn.setRequestProperty(k, v) } catch (_: Exception) {}
+                    }
+                    try {
+                        CookieManager.getInstance().getCookie(urlStr)?.takeIf { it.isNotBlank() }?.let {
+                            conn.setRequestProperty("Cookie", it)
+                        }
+                    } catch (_: Exception) {}
+                    conn.connect()
+                    val code = try { conn.responseCode } catch (_: Exception) { return null }
+                    try {
+                        val hdrs = conn.headerFields
+                        val setCookies = (hdrs["Set-Cookie"] ?: hdrs["set-cookie"] ?: hdrs["Set-cookie"] ?: emptyList())
+                        for (sc in setCookies) {
+                            try { CookieManager.getInstance().setCookie(urlStr, sc) } catch (_: Exception) {}
+                        }
+                    } catch (_: Exception) {}
+                    if (code in 300..399) {
+                        val loc = conn.getHeaderField("Location") ?: return null
+                        try { conn.disconnect() } catch (_: Exception) {}
+                        urlStr = try { java.net.URL(java.net.URL(urlStr), loc).toString() } catch (_: Exception) { return null }
+                        continue
+                    }
+                    val mime = (conn.contentType?.substringBefore(";")?.trim())?.ifBlank { "text/html" } ?: "text/html"
+                    val charset = Regex("charset=([^;]+)", RegexOption.IGNORE_CASE)
+                        .find(conn.contentType ?: "")?.groupValues?.getOrNull(1)?.trim()?.ifBlank { "utf-8" } ?: "utf-8"
+                    val stream = try { conn.inputStream } catch (_: Exception) { conn.errorStream } ?: return null
+                    val respHeaders = mutableMapOf<String, String>()
+                    try {
+                        conn.headerFields?.forEach { (k, v) ->
+                            if (k != null && v != null && v.isNotEmpty() && !k.equals("Transfer-Encoding", ignoreCase = true)) {
+                                respHeaders[k] = v.first()
+                            }
+                        }
+                    } catch (_: Exception) {}
+                    if (urlStr != request.url.toString()) {
+                        try { onMainFrameFinalUrl?.invoke(urlStr) } catch (_: Exception) {}
+                    }
+                    val reason = try { conn.responseMessage } catch (_: Exception) { null } ?: "OK"
+                    return WebResourceResponse(mime, charset, code, reason, respHeaders, stream)
+                } catch (e: Exception) {
+                    try { conn.disconnect() } catch (_: Exception) {}
+                    return null
+                }
+            }
+            return null
+        }
+
+        private fun view_ua(request: WebResourceRequest): String {
+            return try {
+                request.requestHeaders["User-Agent"] ?: request.requestHeaders["user-agent"]
+                ?: System.getProperty("http.agent").orEmpty()
+            } catch (_: Exception) {
+                ""
+            }
         }
 
         @Deprecated("Deprecated in Java")
@@ -125,8 +249,32 @@ class MainActivity : ComponentActivity() {
                     Log.w(TAG, "Shield intercepted and blocked WebRTC STUN/TURN traffic: $url")
                     return createBlockedWebResourceResponse()
                 }
+                if (isSurveillanceTraffic(uri, isMainFrame = false)) {
+                    try { onSurveillanceBlocked?.invoke((uri.host ?: url).lowercase()) } catch (_: Exception) {}
+                    return createBlockedWebResourceResponse()
+                }
             }
             return super.shouldInterceptRequest(view, url)
+        }
+
+        /**
+         * Strict intelligent surveillance blocking: session-replay SDKs record every synthetic
+         * mouse move and keystroke — pure surveillance that degrades silently when absent
+         * (unlike fraud SDKs whose tokens pages require, so those are NEVER blocked).
+         * Active only when the coordinator sees risk OR the host already probed fingerprints.
+         */
+        private fun isSurveillanceTraffic(uri: Uri, isMainFrame: Boolean): Boolean {
+            if (isMainFrame) return false
+            val host = (uri.host ?: "").lowercase()
+            if (host.isBlank()) return false
+            var vendor: String? = null
+            for (v in SURVEILLANCE_VENDORS) {
+                if (host == v || host.endsWith(".$v")) { vendor = v; break }
+            }
+            if (vendor == null) return false
+            return try {
+                strictModeProvider() || isHostileHost(host)
+            } catch (_: Exception) { false }
         }
 
         override fun onReceivedHttpAuthRequest(
@@ -456,6 +604,18 @@ class MainActivity : ComponentActivity() {
             }
 
             /**
+             * Session-replay & behavior-surveillance vendors: blocked strictly because they
+             * exfiltrate full interaction recordings. Fraud/attribution SDKs are DELIBERATELY
+             * absent (blocking them breaks submits/conversions).
+             */
+            private val SURVEILLANCE_VENDORS = setOf(
+                "hotjar.com", "static.hotjar.com", "fullstory.com", "mouseflow.com",
+                "crazyegg.com", "luckyorange.com", "inspectlet.com", "contentsquare.net",
+                "quantummetric.com", "smartlook.com", "sessioncam.com", "userreplay.com",
+                "logrocket.com", "glassboxcdn.com", "decibelinsight.net", "clicktale.net"
+            )
+
+            /**
              * Returns a silent synthetic response to abort the WebRTC/port-scan socket cleanly
              * without exposing custom headers to page scripts.
              */
@@ -503,6 +663,7 @@ class MainActivity : ComponentActivity() {
                         """
                         (function() {
                             try {
+                                try { window.name = ''; } catch(e0) {}
                                 if (window.localStorage) window.localStorage.clear();
                                 if (window.sessionStorage) window.sessionStorage.clear();
                                 if ('caches' in window) {
@@ -660,7 +821,11 @@ fun CpaAutomatorApp(vm: AppViewModel = viewModel()) {
                         onGoToTasks = { vm.selectTab(ScreenTab.TASKS) },
                         onLockerOffersExtracted = { json, onDone -> vm.onLockerOffersExtracted(json, onDone) },
                         onGoToOfferClick = { vm.selectTab(ScreenTab.CLICK) },
-                        onHumanActionStatus = { vm.onHumanActionStatus(it) }
+                        onHumanActionStatus = { vm.onHumanActionStatus(it) },
+                        onShieldTelemetry = { vm.onShieldTelemetry(it) },
+                        onShieldSelfTestResult = { vm.onShieldSelfTestResult(it) },
+                        onIsHostileHost = { vm.isHostileHost(it) },
+                        onSurveillanceBlocked = { vm.onSurveillanceBlocked(it) }
                     )
                 }
             }

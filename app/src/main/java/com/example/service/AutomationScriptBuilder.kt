@@ -7,6 +7,9 @@ import org.json.JSONObject
 
 object AutomationScriptBuilder {
 
+    /** نسخة الدرع — يرفعها المطور مع كل تقوية؛ المنسق يكشف الدرع القديم ويحذر */
+    const val SHIELD_VERSION: Int = 10
+
     fun buildAntiDetectionScript(
         proxyIp: String = "",
         webrtcMode: String = "spoof", // "spoof", "disabled", "real"
@@ -29,7 +32,7 @@ object AutomationScriptBuilder {
         val isLinux = !isAndroid && uaLower.contains("linux")
 
         val platformString = when {
-            isAndroid -> "Linux armv81"
+            isAndroid -> "Linux armv8l"
             isIphone -> "iPhone"
             isMac -> "MacIntel"
             isLinux -> "Linux x86_64"
@@ -179,11 +182,55 @@ object AutomationScriptBuilder {
   var __isMobile = __isAndroid || __isIphone || __runtimeUa.indexOf('mobile') !== -1;
   var __isFirefox = __runtimeUa.indexOf('firefox/') !== -1;
   var __isSafariOnly = (__isIphone || __isMac) && __runtimeUa.indexOf('chrome/') === -1 && __runtimeUa.indexOf('crios/') === -1;
-  var __platformStr = __isAndroid ? 'Linux armv81' : (__isIphone ? 'iPhone' : (__isMac ? 'MacIntel' : (__isLinux ? 'Linux x86_64' : 'Win32')));
+  var __platformStr = __isAndroid ? 'Linux armv8l' : (__isIphone ? 'iPhone' : (__isMac ? 'MacIntel' : (__isLinux ? 'Linux x86_64' : 'Win32')));
   var __clientPlat = __isAndroid ? 'Android' : (__isIphone ? 'iOS' : (__isMac ? 'macOS' : (__isLinux ? 'Linux' : 'Windows')));
   var __touchPts = __isMobile ? 5 : 0;
-  var __glVendor = (__isIphone || __isMac) ? 'Apple Inc.' : (__isAndroid ? 'Qualcomm' : 'Google Inc. (NVIDIA)');
-  var __glRenderer = __isAndroid ? 'Adreno (TM) 740' : (__isIphone ? 'Apple GPU' : (__isMac ? 'Apple M2 Pro' : 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)'));
+
+  // Seeded Real-Device Profile: ONE seed drives ALL signals so they agree like a real device
+  // (fixed 8 cores / same GPU every session = correlatable bot signal)
+  var __hwPick = function(arr, salt) { return arr[__cpaHash(salt >>> 0) % arr.length]; };
+  var __hwCores = __isMobile ? __hwPick([4, 6, 8, 8], 101) : __hwPick([4, 6, 8, 8, 12, 16], 101);
+  // deviceMemory spec enum caps at 8 (0.25/0.5/1/2/4/8) — 6 or 16 would be impossible values
+  var __hwMem = __isMobile ? __hwPick([4, 4, 8], 102) : __hwPick([4, 8, 8], 102);
+  var __androidGpuPairs = [
+    ['Qualcomm', 'Adreno (TM) 740'], ['Qualcomm', 'Adreno (TM) 730'],
+    ['Qualcomm', 'Adreno (TM) 660'], ['ARM', 'Mali-G715 MC7'],
+    ['ARM', 'Mali-G710 MC10'], ['Samsung', 'Xclipse 920']
+  ];
+  var __winGpuPairs = [
+    ['Google Inc. (NVIDIA)', 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)'],
+    ['Google Inc. (NVIDIA)', 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 SUPER Direct3D11 vs_5_0 ps_5_0, D3D11)'],
+    ['Google Inc. (NVIDIA)', 'ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Direct3D11 vs_5_0 ps_5_0, D3D11)'],
+    ['Google Inc. (Intel)', 'ANGLE (Intel, Intel(R) UHD Graphics 770 Direct3D11 vs_5_0 ps_5_0, D3D11)'],
+    ['Google Inc. (AMD)', 'ANGLE (AMD, AMD Radeon RX 6600 Direct3D11 vs_5_0 ps_5_0, D3D11)']
+  ];
+  var __macGpu = ['Apple M1 Pro', 'Apple M2', 'Apple M2 Pro', 'Apple M3'];
+  var __gpuPair;
+  if (__isAndroid) __gpuPair = __hwPick(__androidGpuPairs, 103);
+  else if (__isIphone) __gpuPair = ['Apple Inc.', 'Apple GPU'];
+  else if (__isMac) __gpuPair = ['Apple Inc.', __hwPick(__macGpu, 103)];
+  else if (__isLinux) __gpuPair = ['Google Inc. (AMD)', 'ANGLE (AMD, AMD Radeon RX 6600 Direct3D11 vs_5_0 ps_5_0, D3D11)'];
+  else __gpuPair = __hwPick(__winGpuPairs, 103);
+  var __glVendor = __gpuPair[0];
+  var __glRenderer = __gpuPair[1];
+
+  // Seeded screen: real-device resolutions consistent with the UA class
+  var __deskScreens = [[1920, 1080, 1], [1920, 1080, 1], [1366, 768, 1], [1536, 864, 1.25], [1440, 900, 1], [1600, 900, 1], [2560, 1440, 1]];
+  var __andScreens = [[412, 915, 2.625], [390, 844, 2.5], [360, 800, 2], [384, 854, 2.25], [412, 892, 2.625]];
+  var __iosScreens = [[390, 844, 3], [393, 852, 3], [428, 926, 3]];
+  var __scr = __isAndroid ? __hwPick(__andScreens, 104) : (__isIphone ? __hwPick(__iosScreens, 104) : (__isMac ? [1512, 982, 2] : __hwPick(__deskScreens, 104)));
+  var __scrW = __scr[0], __scrH = __scr[1], __scrDpr = __scr[2];
+  var __scrAvailH = __isMobile ? __scrH : (__scrH - 40);
+
+  // Seeded network profile (rtt/downlink jitter like a real 4G/broadband line)
+  var __netRtt = 40 + (__cpaHash(105) % 55);
+  var __netDl = 8 + (__cpaHash(106) % 9);
+
+  // platformVersion derived from the UA itself (Android major) instead of a fixed guess
+  var __andVerMatch = __runtimeUa.match(/android\s+(\d+)/);
+  var __andPlatVer = __andVerMatch ? (__andVerMatch[1] + '.0.0') : '14.0.0';
+  var __deskPlatVer = __isMac ? ('14.' + (__cpaHash(107) % 6) + '.0') : '15.0.0';
+  var __platVer = __isAndroid ? __andPlatVer : __deskPlatVer;
 
   var __chromeFullMatch = __rawUa.match(/(?:Chrome|CriOS)\/(\d+\.\d+\.\d+\.\d+)/);
   var __chromeFullVer = __chromeFullMatch ? __chromeFullMatch[1] : '126.0.6478.122';
@@ -220,6 +267,21 @@ object AutomationScriptBuilder {
           } catch(e) {}
         }, 'readPixels');
       }
+
+      // WebGL extension list must match the spoofed GPU family (real Adreno exts + RTX name = exposed)
+      var __extDesktop = ['ANGLE_instanced_arrays', 'EXT_blend_minmax', 'EXT_color_buffer_float', 'EXT_frag_depth', 'EXT_shader_texture_lod', 'EXT_sRGB', 'EXT_texture_filter_anisotropic', 'OES_element_index_uint', 'OES_standard_derivatives', 'OES_texture_float', 'OES_texture_float_linear', 'OES_texture_half_float', 'OES_texture_half_float_linear', 'OES_vertex_array_object', 'WEBGL_color_buffer_float', 'WEBGL_compressed_texture_s3tc', 'WEBGL_debug_renderer_info', 'WEBGL_debug_shaders', 'WEBGL_depth_texture', 'WEBGL_draw_buffers', 'WEBGL_lose_context'];
+      var __extMobile = ['ANGLE_instanced_arrays', 'EXT_blend_minmax', 'EXT_color_buffer_float', 'EXT_frag_depth', 'EXT_shader_texture_lod', 'EXT_sRGB', 'EXT_texture_filter_anisotropic', 'OES_element_index_uint', 'OES_standard_derivatives', 'OES_texture_float', 'OES_texture_half_float', 'OES_texture_half_float_linear', 'OES_vertex_array_object', 'WEBGL_compressed_texture_etc', 'WEBGL_compressed_texture_astc', 'WEBGL_debug_renderer_info', 'WEBGL_debug_shaders', 'WEBGL_depth_texture', 'WEBGL_draw_buffers', 'WEBGL_lose_context'];
+      var __extAllow = (__isMobile ? __extMobile : __extDesktop);
+      try {
+        proto.getSupportedExtensions = __cpaMaskNative(function() { return __extAllow.slice(); }, 'getSupportedExtensions');
+        var origGetExt = proto.getExtension;
+        if (typeof origGetExt === 'function') {
+          proto.getExtension = __cpaMaskNative(function(name) {
+            for (var ei = 0; ei < __extAllow.length; ei++) { if (__extAllow[ei] === name) return origGetExt.call(this, name); }
+            return null;
+          }, 'getExtension');
+        }
+      } catch(e) {}
     }
     if (window.WebGLRenderingContext) patchWebGlProto(WebGLRenderingContext.prototype);
     if (window.WebGL2RenderingContext) patchWebGlProto(WebGL2RenderingContext.prototype);
@@ -230,11 +292,225 @@ object AutomationScriptBuilder {
     var navProto = (typeof Navigator !== 'undefined' && Navigator.prototype) ? Navigator.prototype : null;
     defineProtoGetter(navProto, navigator, 'webdriver', function() { return false; });
     defineProtoGetter(navProto, navigator, 'platform', function() { return __platformStr; });
-    defineProtoGetter(navProto, navigator, 'hardwareConcurrency', function() { return 8; });
-    defineProtoGetter(navProto, navigator, 'deviceMemory', function() { return 8; });
+    defineProtoGetter(navProto, navigator, 'hardwareConcurrency', function() { return __hwCores; });
+    defineProtoGetter(navProto, navigator, 'deviceMemory', function() { return __hwMem; });
     defineProtoGetter(navProto, navigator, 'maxTouchPoints', function() { return __touchPts; });
     defineProtoGetter(navProto, navigator, 'vendor', function() { return (__isIphone || __isMac) && __isSafariOnly ? 'Apple Computer, Inc.' : (__isFirefox ? '' : 'Google Inc.'); });
     defineProtoGetter(navProto, navigator, 'pdfViewerEnabled', function() { return !__isMobile; });
+
+    // PluginArray & MimeTypeArray: desktop Chrome has 5 plugins — 0 = headless signal (mobile keeps native)
+    try {
+      if (!__isMobile) {
+        var __plugNames = ['PDF Viewer', 'Chrome PDF Viewer', 'Chromium PDF Viewer', 'Microsoft Edge PDF Viewer', 'WebKit built-in PDF'];
+        var __fakePlugins = [];
+        for (var __pi = 0; __pi < __plugNames.length; __pi++) {
+          __fakePlugins.push({ name: __plugNames[__pi], filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1,
+            item: function() { return { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }; },
+            namedItem: function() { return null; } });
+        }
+        __fakePlugins.item = function(i) { return this[i] || null; };
+        __fakePlugins.namedItem = function(n) { for (var k = 0; k < this.length; k++) { if (this[k] && this[k].name === n) return this[k]; } return null; };
+        __fakePlugins.refresh = __cpaMaskNative(function() {}, 'refresh');
+        defineProtoGetter(navProto, navigator, 'plugins', function() { return __fakePlugins; });
+        var __fakeMimes = [
+          { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+          { type: 'text/pdf', suffixes: 'pdf', description: 'Portable Document Format' }
+        ];
+        __fakeMimes.item = function(i) { return this[i] || null; };
+        __fakeMimes.namedItem = function(t) { for (var k = 0; k < this.length; k++) { if (this[k] && this[k].type === t) return this[k]; } return null; };
+        defineProtoGetter(navProto, navigator, 'mimeTypes', function() { return __fakeMimes; });
+      }
+    } catch(e) {}
+
+    // Keyboard layout map: real layout leaks locale habits — consistent map per spoofed language
+    try {
+      if (navigator.keyboard && navigator.keyboard.getLayoutMap) {
+        var __kbdIsAr = (('$cleanLang' || '').indexOf('ar') === 0);
+        var __kbdPairs = __kbdIsAr
+          ? 'KeyQ:ض,KeyW:ص,KeyE:ث,KeyR:ق,KeyT:ف,KeyY:غ,KeyU:ع,KeyI:ه,KeyO:خ,KeyP:ح,BracketLeft:ج,BracketRight:د,KeyA:ش,KeyS:س,KeyD:ي,KeyF:ب,KeyG:ل,KeyH:ا,KeyJ:ت,KeyK:ن,KeyL:م,Semicolon:ك,Quote:ط,KeyZ:ئ,KeyX:ء,KeyC:ؤ,KeyV:ر,KeyB:لا,KeyN:ى,KeyM:ة,Comma:و,Period:ز,Slash:ظ,Digit1:1,Digit2:2,Digit3:3,Digit4:4,Digit5:5,Digit6:6,Digit7:7,Digit8:8,Digit9:9,Digit0:0,Space: ,Enter:Enter,Tab:Tab,Backspace:Backspace'
+          : 'KeyQ:q,KeyW:w,KeyE:e,KeyR:r,KeyT:t,KeyY:y,KeyU:u,KeyI:i,KeyO:o,KeyP:p,BracketLeft:[,BracketRight:],KeyA:a,KeyS:s,KeyD:d,KeyF:f,KeyG:g,KeyH:h,KeyJ:j,KeyK:k,KeyL:l,Semicolon:;,Quote:\',KeyZ:z,KeyX:x,KeyC:c,KeyV:v,KeyB:b,KeyN:n,KeyM:m,Comma:,,Period:.,Slash:/,Digit1:1,Digit2:2,Digit3:3,Digit4:4,Digit5:5,Digit6:6,Digit7:7,Digit8:8,Digit9:9,Digit0:0,Space: ,Enter:Enter,Tab:Tab,Backspace:Backspace';
+        var __kbdEntries = [];
+        (function() {
+          var parts = __kbdPairs.split(',');
+          for (var i = 0; i < parts.length; i++) {
+            var kv = parts[i].split(':');
+            if (kv.length === 2) __kbdEntries.push([kv[0], kv[1]]);
+          }
+        })();
+        var __kbdMapLike = {
+          size: __kbdEntries.length,
+          get: function(k) { for (var i = 0; i < __kbdEntries.length; i++) { if (__kbdEntries[i][0] === k) return __kbdEntries[i][1]; } return undefined; },
+          has: function(k) { for (var i = 0; i < __kbdEntries.length; i++) { if (__kbdEntries[i][0] === k) return true; } return false; },
+          keys: function() { var a = []; for (var i = 0; i < __kbdEntries.length; i++) a.push(__kbdEntries[i][0]); return a.values ? a.values() : a; },
+          values: function() { var a = []; for (var i = 0; i < __kbdEntries.length; i++) a.push(__kbdEntries[i][1]); return a.values ? a.values() : a; },
+          entries: function() { return __kbdEntries.slice(); },
+          forEach: function(cb, th) { for (var i = 0; i < __kbdEntries.length; i++) cb.call(th, __kbdEntries[i][1], __kbdEntries[i][0], this); }
+        };
+        try {
+          var __kbdProto = Object.getPrototypeOf(navigator.keyboard) || navigator.keyboard;
+          __kbdProto.getLayoutMap = __cpaMaskNative(function() { return Promise.resolve(__kbdMapLike); }, 'getLayoutMap');
+        } catch(e) {
+          try { navigator.keyboard.getLayoutMap = __cpaMaskNative(function() { return Promise.resolve(__kbdMapLike); }, 'getLayoutMap'); } catch(e2) {}
+        }
+      }
+    } catch(e) {}
+
+    // SpeechSynthesis voices: real device voices (e.g. emulator packs) are a leak — plausible list per language
+    try {
+      if (window.speechSynthesis) {
+        var __voiceLang = (('$cleanLang' || '').indexOf('ar') === 0) ? 'ar-SA' : 'en-US';
+        var __fakeVoices = [
+          { name: __voiceLang.indexOf('ar') === 0 ? 'Microsoft Hoda - Arabic (Saudi Arabia)' : 'Google US English', lang: __voiceLang, localService: true, default: true, voiceURI: __voiceLang.indexOf('ar') === 0 ? 'Microsoft Hoda' : 'Google US English' },
+          { name: __voiceLang.indexOf('ar') === 0 ? 'Google Arabic' : 'Google UK English Female', lang: __voiceLang.indexOf('ar') === 0 ? 'ar' : 'en-GB', localService: true, default: false, voiceURI: __voiceLang.indexOf('ar') === 0 ? 'Google Arabic' : 'Google UK English Female' }
+        ];
+        try {
+          Object.defineProperty(window.speechSynthesis, 'getVoices', {
+            value: __cpaMaskNative(function() { return __fakeVoices.slice(); }, 'getVoices'),
+            configurable: true
+          });
+        } catch(e) {}
+        try {
+          Object.defineProperty(window.speechSynthesis, 'pending', { get: __cpaMaskNative(function() { return false; }, 'get pending'), configurable: true });
+          Object.defineProperty(window.speechSynthesis, 'speaking', { get: __cpaMaskNative(function() { return false; }, 'get speaking'), configurable: true });
+        } catch(e) {}
+      }
+    } catch(e) {}
+
+    // WebGPU: requestAdapter leaks the REAL GPU architecture — spoof adapter matching our renderer story
+    try {
+      var __gpuArch = 'adreno-740', __gpuVend = 'qualcomm', __gpuDev = '';
+      try {
+        var __gr = (__glRenderer || '').toLowerCase();
+        if (__gr.indexOf('mali-g715') !== -1) { __gpuVend = 'arm'; __gpuArch = 'mali-g715'; }
+        else if (__gr.indexOf('mali-g710') !== -1) { __gpuVend = 'arm'; __gpuArch = 'mali-g710'; }
+        else if (__gr.indexOf('xclipse') !== -1) { __gpuVend = 'samsung'; __gpuArch = 'xclipse-920'; }
+        else if (__gr.indexOf('adreno') !== -1) { __gpuVend = 'qualcomm'; __gpuArch = 'adreno-740'; }
+        else if (__gr.indexOf('apple') !== -1) { __gpuVend = 'apple'; __gpuArch = 'apple-m2'; }
+        else if (__gr.indexOf('uhd graphics 770') !== -1) { __gpuVend = 'intel'; __gpuArch = 'gen-12lp'; }
+        else if (__gr.indexOf('rx 6600') !== -1) { __gpuVend = 'amd'; __gpuArch = 'rdna-2'; }
+        else if (__gr.indexOf('rtx 4060') !== -1) { __gpuVend = 'nvidia'; __gpuArch = 'ada'; }
+        else if (__gr.indexOf('1660') !== -1) { __gpuVend = 'nvidia'; __gpuArch = 'turing'; }
+        else { __gpuVend = 'nvidia'; __gpuArch = 'ampere'; }
+        __gpuDev = __gpuArch;
+      } catch(e) {}
+      var __fakeAdapterInfo = { vendor: __gpuVend, architecture: __gpuArch, device: __gpuDev, description: '' };
+      var __fakeAdapter = {
+        info: __fakeAdapterInfo,
+        requestDevice: __cpaMaskNative(function() {
+          return Promise.resolve({
+            label: '', lost: Promise.resolve({ reason: 'destroyed', message: '' }),
+            createBuffer: function() { throw new Error('Not supported'); },
+            destroy: function() {}
+          });
+        }, 'requestDevice')
+      };
+      var __gpuObj = null;
+      try { __gpuObj = navigator.gpu || null; } catch(e) {}
+      if (!__gpuObj && !__isMobile) {
+        // Desktop UA without WebGPU = mismatch (real desktop Chrome 113+ has it)
+        __gpuObj = {};
+        try {
+          Object.defineProperty(navigator, 'gpu', { value: __gpuObj, enumerable: true, configurable: true });
+        } catch(e) {}
+      }
+      if (__gpuObj) {
+        try {
+          __gpuObj.requestAdapter = __cpaMaskNative(function() {
+            try { if (window.__cpaBridge) window.__cpaBridge.note('webgpu'); } catch(e) {}
+            return Promise.resolve(__fakeAdapter);
+          }, 'requestAdapter');
+        } catch(e) {}
+      }
+    } catch(e) {}
+
+    // Desktop-UA on a phone: vibrate/virtualKeyboard/presentation must not leak mobile hardware
+    try {
+      if (!__isMobile) {
+        try {
+          if (navigator.vibrate) {
+            navigator.vibrate = __cpaMaskNative(function() { return false; }, 'vibrate');
+          }
+        } catch(e) {}
+        try {
+          Object.defineProperty(navigator, 'virtualKeyboard', { get: __cpaMaskNative(function() { return undefined; }, 'get virtualKeyboard'), enumerable: true, configurable: true });
+        } catch(e) {}
+        try {
+          Object.defineProperty(navigator, 'presentation', { get: __cpaMaskNative(function() { return undefined; }, 'get presentation'), enumerable: true, configurable: true });
+        } catch(e) {}
+      }
+    } catch(e) {}
+
+    // Permissions API: never leak 'denied' for camera/mic (fresh browsers report 'prompt')
+    try {
+      if (navigator.permissions && navigator.permissions.query) {
+        var __origPermQuery = navigator.permissions.query.bind(navigator.permissions);
+        navigator.permissions.query = __cpaMaskNative(function(params) {
+          return __origPermQuery(params).then(function(status) {
+            try {
+              if (params && (params.name === 'camera' || params.name === 'microphone') && status && status.state === 'denied') {
+                return { state: 'prompt', onchange: null };
+              }
+            } catch(e) {}
+            return status;
+          });
+        }, 'query');
+      }
+    } catch(e) {}
+
+    // AudioContext fingerprint: deterministic per-session LSB noise on offline render (stable across reads)
+    try {
+      if (window.OfflineAudioContext && !OfflineAudioContext.prototype.__cpaAudioPatched) {
+        Object.defineProperty(OfflineAudioContext.prototype, '__cpaAudioPatched', { value: true, enumerable: false, configurable: true });
+        var __origStartRendering = OfflineAudioContext.prototype.startRendering;
+        OfflineAudioContext.prototype.startRendering = __cpaMaskNative(function() {
+          return __origStartRendering.call(this).then(function(buffer) {
+            try {
+              if (buffer && buffer.numberOfChannels && buffer.length > 32) {
+                var ch0 = buffer.getChannelData(0);
+                var step = Math.max(97, (buffer.length / 2048) | 0);
+                for (var ai = 0; ai < ch0.length; ai += step) {
+                  var ah = __cpaHash(ai | 0);
+                  ch0[ai] = ch0[ai] + ((ah & 1) ? 0.0000007 : -0.0000007);
+                }
+              }
+            } catch(e) {}
+            return buffer;
+          });
+        }, 'startRendering');
+      }
+    } catch(e) {}
+
+    // DOMRect fingerprint: stable per-element sub-pixel offset (identical on every read — no drift signal)
+    try {
+      if (window.Element && Element.prototype.getClientRects && !Element.prototype.__cpaRectPatched) {
+        Object.defineProperty(Element.prototype, '__cpaRectPatched', { value: true, enumerable: false, configurable: true });
+        var __origGCR = Element.prototype.getClientRects;
+        Element.prototype.getClientRects = __cpaMaskNative(function() {
+          var rects = __origGCR.call(this);
+          try {
+            if (rects && rects.length > 0) {
+              var tag = (this.tagName || 'E') + '|' + (this.className || '') + '|' + rects.length;
+              var hh = 0;
+              for (var ci = 0; ci < tag.length; ci++) hh = ((hh * 31) + tag.charCodeAt(ci)) >>> 0;
+              hh = __cpaHash(hh);
+              var jx = (((hh % 1000) / 1000) - 0.5) * 0.06;
+              var jy = ((((hh >>> 10) % 1000) / 1000) - 0.5) * 0.06;
+              if (jx !== 0 || jy !== 0) {
+                var out = [];
+                for (var ri = 0; ri < rects.length; ri++) {
+                  var r = rects[ri];
+                  out.push({ x: r.x + jx, y: r.y + jy, width: r.width, height: r.height,
+                    top: r.top + jy, right: r.right + jx, bottom: r.bottom + jy, left: r.left + jx,
+                    toJSON: function() { return this; } });
+                }
+                return out;
+              }
+            }
+          } catch(e) {}
+          return rects;
+        }, 'getClientRects');
+      }
+    } catch(e) {}
 
     if (__rawUa.length > 0 && __rawUa.toLowerCase() !== 'random') {
       defineProtoGetter(navProto, navigator, 'userAgent', function() { return __rawUa; });
@@ -287,8 +563,8 @@ object AutomationScriptBuilder {
       if (navigator.connection) {
         var connProto = Object.getPrototypeOf(navigator.connection);
         defineProtoGetter(connProto, navigator.connection, 'effectiveType', function() { return '4g'; });
-        defineProtoGetter(connProto, navigator.connection, 'rtt', function() { return 50; });
-        defineProtoGetter(connProto, navigator.connection, 'downlink', function() { return 10; });
+        defineProtoGetter(connProto, navigator.connection, 'rtt', function() { return __netRtt; });
+        defineProtoGetter(connProto, navigator.connection, 'downlink', function() { return __netDl; });
         defineProtoGetter(connProto, navigator.connection, 'saveData', function() { return false; });
       }
     } catch(e) {}
@@ -343,7 +619,7 @@ object AutomationScriptBuilder {
             mobile: __isMobile,
             model: __deviceModel,
             platform: __clientPlat,
-            platformVersion: __isAndroid ? '14.0.0' : '15.0.0',
+            platformVersion: __platVer,
             uaFullVersion: __chromeFullVer
           });
         }, 'getHighEntropyValues'),
@@ -354,11 +630,20 @@ object AutomationScriptBuilder {
       defineProtoGetter(navProto, navigator, 'userAgentData', function() { return uaData; });
     }
 
-    // Screen color depth
+    // Screen: seeded real-device geometry consistent with the UA class (inner viewport stays real)
     try {
       var scrProto = (typeof Screen !== 'undefined' && Screen.prototype) ? Screen.prototype : null;
       defineProtoGetter(scrProto, screen, 'colorDepth', function() { return 24; });
       defineProtoGetter(scrProto, screen, 'pixelDepth', function() { return 24; });
+      defineProtoGetter(scrProto, screen, 'width', function() { return __scrW; });
+      defineProtoGetter(scrProto, screen, 'height', function() { return __scrH; });
+      defineProtoGetter(scrProto, screen, 'availWidth', function() { return __scrW; });
+      defineProtoGetter(scrProto, screen, 'availHeight', function() { return __scrAvailH; });
+      defineProtoGetter(scrProto, screen, 'availLeft', function() { return 0; });
+      defineProtoGetter(scrProto, screen, 'availTop', function() { return 0; });
+      try {
+        Object.defineProperty(window, 'devicePixelRatio', { get: __cpaMaskNative(function() { return __scrDpr; }, 'get devicePixelRatio'), configurable: true });
+      } catch(e) {}
     } catch(e) {}
 
     // Deterministic Per-Session Canvas & Audio Fingerprint Shield (Defeats multi-read determinism checks)
@@ -1024,8 +1309,8 @@ object AutomationScriptBuilder {
           var subNavProto = (targetWin.Navigator && targetWin.Navigator.prototype) ? targetWin.Navigator.prototype : targetWin.navigator;
           defineProtoGetter(subNavProto, targetWin.navigator, 'webdriver', function() { return false; });
           defineProtoGetter(subNavProto, targetWin.navigator, 'platform', function() { return __platformStr; });
-          defineProtoGetter(subNavProto, targetWin.navigator, 'hardwareConcurrency', function() { return 8; });
-          defineProtoGetter(subNavProto, targetWin.navigator, 'deviceMemory', function() { return 8; });
+          defineProtoGetter(subNavProto, targetWin.navigator, 'hardwareConcurrency', function() { return __hwCores; });
+          defineProtoGetter(subNavProto, targetWin.navigator, 'deviceMemory', function() { return __hwMem; });
           defineProtoGetter(subNavProto, targetWin.navigator, 'maxTouchPoints', function() { return __touchPts; });
           defineProtoGetter(subNavProto, targetWin.navigator, 'language', function() { return window.__cpaTargetLang || '$cleanLang'; });
           defineProtoGetter(subNavProto, targetWin.navigator, 'languages', function() { var l = window.__cpaTargetLang || '$cleanLang'; return [l, l.split('-')[0]]; });
@@ -1305,6 +1590,562 @@ true;
         """.trimIndent()
     }
 
+    /**
+     * Device Bridge — الجسر الكامل: يفهم كل طلب وصول للجهاز ويحوّله للمزيف.
+     * نواة تصنيف مركزية (__cpaBridge): تحصي لمسات البصمة، تسجّل النتيجة، وتبلّغ
+     * الأصلي (AndroidBridge.onShieldTelemetry) عند رصد فحص بصمة حقيقي.
+     * يغطي: الذاكرة/التخزين/الخطوط/الاتجاه/matchMedia/الصوت + حقن Workers.
+     */
+    fun buildDeviceBridgeScript(
+        latitude: Double = 40.7128,
+        longitude: Double = -74.0060,
+        userAgent: String = "",
+        fingerprintSeed: Long = 0L,
+        language: String = "en-US"
+    ): String {
+        val cleanUa = userAgent.trim().replace("'", "\\'")
+        val seedInit = if (fingerprintSeed == 0L) "2166136261" else "${fingerprintSeed}>>>0"
+        val cleanBridgeLang = language.trim().replace("'", "").takeIf {
+            it.matches(Regex("^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})?$"))
+        } ?: "en-US"
+        val uaLowerBridge = cleanUa.lowercase()
+        val bridgePlatform = when {
+            uaLowerBridge.contains("android") -> "Linux armv8l"
+            uaLowerBridge.contains("iphone") || uaLowerBridge.contains("ipad") -> "iPhone"
+            !uaLowerBridge.contains("iphone") && uaLowerBridge.contains("macintosh") -> "MacIntel"
+            !uaLowerBridge.contains("android") && uaLowerBridge.contains("linux") -> "Linux x86_64"
+            else -> "Win32"
+        }
+        return """
+(function() {
+  if (window.__cpaBridge && window.__cpaBridge.v === 1) return;
+  var SEED = (window.__cpaSessionSeed || ($seedInit)) >>> 0;
+  var RUA = ('$cleanUa' || (typeof navigator !== 'undefined' ? navigator.userAgent : '') || '').toLowerCase();
+  var MOBILE = RUA.indexOf('android') !== -1 || RUA.indexOf('iphone') !== -1 || RUA.indexOf('mobile') !== -1;
+  // نفس ملف الشاشة في الدرع الرئيسي (نفس البذرة + نفس الملح = نفس القيم)
+  var __bIsIPhone = RUA.indexOf('iphone') !== -1 || RUA.indexOf('ipad') !== -1;
+  var __bIsAndroid = RUA.indexOf('android') !== -1;
+  var __bDpr = __bIsAndroid ? [2.625, 2.5, 2, 2.25, 2.625][H(104) % 5] : (__bIsIPhone ? 3 : [1, 1, 1, 1.25, 1, 1, 1][H(104) % 7]);
+  var __bScrW = __bIsAndroid ? [412, 390, 360, 384, 412][H(104) % 5] : (__bIsIPhone ? 390 : [1920, 1920, 1366, 1536, 1440, 1600, 2560][H(104) % 7]);
+  var __bScrH = __bIsAndroid ? [915, 844, 800, 854, 892][H(104) % 5] : (__bIsIPhone ? 844 : [1080, 1080, 768, 864, 900, 900, 1440][H(104) % 7]);
+  function H(n) { var x = ((n ^ SEED) + 0x9e3779b9) >>> 0; x = Math.imul(x ^ (x >>> 16), 0x85ebca6b) >>> 0; x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35) >>> 0; return (x ^ (x >>> 16)) >>> 0; }
+  function maskFn(fn, name) {
+    try {
+      if (window.__cpaToStringMap && typeof fn === 'function') {
+        try { Object.defineProperty(fn, 'name', { value: name || '', configurable: true }); } catch(e) {}
+        window.__cpaToStringMap.set(fn, 'function ' + (name || '') + '() { [native code] }');
+      }
+    } catch(e) {}
+    return fn;
+  }
+
+  // ── نواة الفهم: تصنيف كل طلب + نتيجة خطورة ──
+  var WEIGHTS = { canvas: 3, webgl: 3, webgpu: 4, audio: 2, font: 2, rtc: 4, geo: 4, camera: 5, worker: 2, storage: 1, perf: 1, media: 2 };
+  var hits = {};
+  var lastReport = 0;
+  function scoreNow() {
+    var s = 0;
+    for (var k in hits) { if (WEIGHTS[k]) s += Math.min(hits[k], 5) * WEIGHTS[k]; }
+    return s;
+  }
+  function note(api) {
+    hits[api] = (hits[api] || 0) + 1;
+    var score = scoreNow();
+    var now = Date.now();
+    if ((score >= 12 || api === 'camera' || api === 'geo') && (now - lastReport > 10000)) {
+      lastReport = now;
+      try {
+        var arr = [];
+        for (var k2 in hits) arr.push(k2 + ':' + hits[k2]);
+        arr.sort(function(a, b) { return parseInt(b.split(':')[1], 10) - parseInt(a.split(':')[1], 10); });
+        var payload = JSON.stringify({ u: (window.location.href || '').slice(0, 120), score: score, top: arr.slice(0, 4) });
+        if (window.AndroidBridge && window.AndroidBridge.onShieldTelemetry) window.AndroidBridge.onShieldTelemetry(payload);
+      } catch(e) {}
+    }
+    return score;
+  }
+  function countWrap(obj, name, api) {
+    try {
+      if (!obj) return;
+      var orig = obj[name];
+      if (typeof orig !== 'function' || orig.__cpaBridged) return;
+      var w = function() { note(api); return orig.apply(this, arguments); };
+      w.__cpaBridged = true;
+      obj[name] = maskFn(w, name);
+    } catch(e) {}
+  }
+
+  // ── عدّادات الفهم على واجهات البصمة (القيم يضبطها الدرع الرئيسي، الجسر يفهم ويحصي) ──
+  try {
+    if (window.CanvasRenderingContext2D) {
+      countWrap(CanvasRenderingContext2D.prototype, 'getImageData', 'canvas');
+      // بصمة الخطوط: إزاحة مجهرية ثابتة لكل (خط+نص) — تهزم القياس دون كسر التخطيط
+      var origMeasure = CanvasRenderingContext2D.prototype.measureText;
+      if (typeof origMeasure === 'function' && !origMeasure.__cpaBridged) {
+        var wMeasure = function(txt) {
+          note('font');
+          var m = origMeasure.apply(this, arguments);
+          try {
+            var key = (this.font || '') + '|' + String(txt);
+            var hh = 0;
+            for (var i = 0; i < key.length; i++) hh = ((hh * 31) + key.charCodeAt(i)) >>> 0;
+            hh = H(hh);
+            var dw = (((hh % 200) / 200) - 0.5) * 0.24;
+            if (dw !== 0) {
+              var out = {};
+              for (var p in m) { try { out[p] = m[p]; } catch(e) {} }
+              out.width = m.width + dw;
+              return out;
+            }
+          } catch(e) {}
+          return m;
+        };
+        wMeasure.__cpaBridged = true;
+        CanvasRenderingContext2D.prototype.measureText = maskFn(wMeasure, 'measureText');
+      }
+    }
+    if (window.HTMLCanvasElement) {
+      countWrap(HTMLCanvasElement.prototype, 'toDataURL', 'canvas');
+      countWrap(HTMLCanvasElement.prototype, 'toBlob', 'canvas');
+    }
+    if (window.WebGLRenderingContext) {
+      countWrap(WebGLRenderingContext.prototype, 'getParameter', 'webgl');
+      countWrap(WebGLRenderingContext.prototype, 'readPixels', 'webgl');
+    }
+    if (window.WebGL2RenderingContext) {
+      countWrap(WebGL2RenderingContext.prototype, 'getParameter', 'webgl');
+      countWrap(WebGL2RenderingContext.prototype, 'readPixels', 'webgl');
+    }
+    if (window.OfflineAudioContext) countWrap(OfflineAudioContext.prototype, 'startRendering', 'audio');
+    if (window.AnalyserNode) {
+      countWrap(AnalyserNode.prototype, 'getByteFrequencyData', 'audio');
+      countWrap(AnalyserNode.prototype, 'getFloatFrequencyData', 'audio');
+    }
+    if (navigator.geolocation) {
+      var gp = Object.getPrototypeOf(navigator.geolocation) || navigator.geolocation;
+      countWrap(gp, 'getCurrentPosition', 'geo');
+      countWrap(gp, 'watchPosition', 'geo');
+    }
+    if (navigator.mediaDevices) {
+      countWrap(navigator.mediaDevices, 'getUserMedia', 'camera');
+      countWrap(navigator.mediaDevices, 'enumerateDevices', 'media');
+    }
+    if (window.RTCPeerConnection && !window.RTCPeerConnection.__cpaBridged) {
+      try {
+        var OrigRTC = window.RTCPeerConnection;
+        var WRTC = function() { note('rtc'); return new OrigRTC(arguments[0]); };
+        WRTC.__cpaBridged = true;
+        WRTC.prototype = OrigRTC.prototype;
+        window.RTCPeerConnection = maskFn(WRTC, 'RTCPeerConnection');
+      } catch(e) {}
+    }
+    if (navigator.storage && navigator.storage.estimate) countWrap(navigator.storage, 'estimate', 'storage');
+  } catch(e) {}
+
+  // ── تحويلات الجسر: ذاكرة الأداء + حصة التخزين (متناسقة مع فئة الجهاز) ──
+  var HW_MEM = MOBILE ? [4, 6, 8][H(102) % 3] : [4, 8, 8, 16][H(102) % 4];
+  try {
+    if (window.performance && window.performance.memory) {
+      var heapLimit = HW_MEM * 1073741824;
+      var heapUsed = 14000000 + (H(201) % 26000000);
+      Object.defineProperty(window.performance, 'memory', {
+        get: maskFn(function() {
+          note('perf');
+          return { usedJSHeapSize: heapUsed, totalJSHeapSize: Math.floor(heapUsed * 1.6), jsHeapSizeLimit: heapLimit };
+        }, 'get memory'),
+        configurable: true
+      });
+    }
+  } catch(e) {}
+  try {
+    if (navigator.storage && navigator.storage.estimate) {
+      var quota = MOBILE ? (6442450944 + (H(202) % 1000000000)) : (107374182400 + (H(202) % 10000000000));
+      var usage = 12000000 + (H(203) % 60000000);
+      var origEst = navigator.storage.estimate.bind(navigator.storage);
+      navigator.storage.estimate = maskFn(function() {
+        note('storage');
+        return Promise.resolve({ quota: quota, usage: usage, usageDetails: {} });
+      }, 'estimate');
+    }
+  } catch(e) {}
+
+  // ── اتساق الاتجاه والمؤشر مع فئة الجهاز ──
+  try {
+    Object.defineProperty(screen, 'orientation', {
+      get: maskFn(function() {
+        return { angle: 0, type: MOBILE ? 'portrait-primary' : 'landscape-primary', onchange: null };
+      }, 'get orientation'),
+      configurable: true
+    });
+  } catch(e) {}
+  try {
+    var origMatchMedia = window.matchMedia;
+    if (typeof origMatchMedia === 'function' && !origMatchMedia.__cpaBridged) {
+      var wMM = function(query) {
+        var q = String(query || '');
+        var noop = function() {};
+        var fakeMQL = function(matches) {
+          return { matches: !!matches, media: q, onchange: null, addListener: noop, removeListener: noop, addEventListener: noop, removeEventListener: noop, dispatchEvent: function() { return true; } };
+        };
+        // Color scheme fixed to light (consistent session-wide; system dark mode would contradict)
+        if (q.indexOf('prefers-color-scheme') !== -1) {
+          return fakeMQL(q.indexOf('light') !== -1);
+        }
+        // Resolution + device dims must agree with the spoofed screen (CSS sees real values otherwise)
+        if (q.indexOf('resolution') !== -1 || q.indexOf('dppx') !== -1 || q.indexOf('pixel-ratio') !== -1 || (q.indexOf('dpi') !== -1 && q.indexOf('resolution') === -1 && q.indexOf('scan') === -1)) {
+          try {
+            var m = q.match(/(\d+(?:\.\d+)?)\s*(dppx|dpi|x)?/);
+            if (m) {
+              var v = parseFloat(m[1]);
+              var unit = m[2] || 'x';
+              var actual = (unit === 'dpi') ? (__bDpr * 96) : __bDpr;
+              var isMin = q.indexOf('min-') !== -1;
+              var isMax = q.indexOf('max-') !== -1;
+              var ok = isMin ? (actual >= v - 0.001) : (isMax ? (actual <= v + 0.001) : (Math.abs(actual - v) < 0.01));
+              return fakeMQL(ok);
+            }
+          } catch(e) {}
+        }
+        if (q.indexOf('device-width') !== -1 || q.indexOf('device-height') !== -1) {
+          try {
+            var dm = q.match(/(\d+(?:\.\d+)?)\s*(px)?/);
+            if (dm) {
+              var dv = parseFloat(dm[1]);
+              var dActual = (q.indexOf('device-height') !== -1) ? __bScrH : __bScrW;
+              var dMin = q.indexOf('min-') !== -1;
+              var dMax = q.indexOf('max-') !== -1;
+              var dOk = dMin ? (dActual >= dv) : (dMax ? (dActual <= dv) : (dActual === dv));
+              return fakeMQL(dOk);
+            }
+          } catch(e) {}
+        }
+        if (q.indexOf('pointer') !== -1 || q.indexOf('hover') !== -1) {
+          var wantFine = q.indexOf('fine') !== -1 || (q.indexOf('hover') !== -1 && q.indexOf('hover: hover') !== -1);
+          var wantCoarse = q.indexOf('coarse') !== -1 || (q.indexOf('hover') !== -1 && q.indexOf('none') !== -1);
+          var matches = MOBILE ? (wantCoarse || (!wantFine && q.indexOf('none') !== -1)) : (wantFine || (!wantCoarse && q.indexOf('hover') !== -1));
+          if (q.indexOf('any-pointer') !== -1 || q.indexOf('any-hover') !== -1) matches = true;
+          return fakeMQL(matches);
+        }
+        return origMatchMedia.apply(this, arguments);
+      };
+      wMM.__cpaBridged = true;
+      window.matchMedia = maskFn(wMM, 'matchMedia');
+    }
+  } catch(e) {}
+
+  // ── حركة الجهاز (موبايل فقط): حدث واحد لطيف "هاتف على الطاولة" عند أول مستمع ──
+  try {
+    if (MOBILE && typeof window.DeviceOrientationEvent !== 'undefined') {
+      var __cpaOriFired = false;
+      var origAddEv = window.addEventListener;
+      window.addEventListener = maskFn(function(type, listener, opts) {
+        try {
+          if ((type === 'deviceorientation' || type === 'devicemotion') && !__cpaOriFired) {
+            __cpaOriFired = true;
+            setTimeout(function() {
+              try {
+                if (type === 'deviceorientation') {
+                  window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', {
+                    alpha: H(204) % 360, beta: 8 + (H(205) % 10), gamma: (H(206) % 7) - 3, absolute: false
+                  }));
+                }
+              } catch(e) {}
+            }, 900);
+          }
+        } catch(e) {}
+        return origAddEv.call(this, type, listener, opts);
+      }, 'addEventListener');
+    }
+  } catch(e) {}
+
+  // ── درع Workers: إعادة كتابة Blob workers مع درع مدمج + تمرير الأحداث ──
+  window.__cpaWorkerShield =
+    '(function(){try{' +
+    'var __ws=' + SEED + ';' +
+    'function __wh(n){var x=((n^__ws)+0x9e3779b9)>>>0;x=Math.imul(x^(x>>>16),0x85ebca6b)>>>0;x=Math.imul(x^(x>>>13),0xc2b2ae35)>>>0;return (x^(x>>>16))>>>0;}' +
+    'var __wm=' + (MOBILE ? 'true' : 'false') + ';' +
+    'var __wua="' + cleanUa.replace("\"", "") + '";' +
+    'var __wplat="' + bridgePlatform + '";' +
+    'var __wlang="' + cleanBridgeLang + '";' +
+    'var __wc=__wm?[4,6,8,8][__wh(101)%4]:[4,6,8,8,12,16][__wh(101)%6];' +
+    'var __wd=__wm?[4,4,8][__wh(102)%3]:[4,8,8][__wh(102)%3];' +
+    'var __wbase="' + (tryBase()) + '";' +
+    'try{var __ob=importScripts;importScripts=function(){var a=[];for(var i=0;i<arguments.length;i++){var u=arguments[i];try{if(u.indexOf("://")<0&&u.indexOf("blob:")!==0){u=__wbase+u;}}catch(e){}a.push(u);}return __ob.apply(this,a);};}catch(e){}' +
+    'try{Object.defineProperty(self.navigator,"hardwareConcurrency",{get:function(){return __wc;},configurable:true});}catch(e){}' +
+    'try{Object.defineProperty(self.navigator,"deviceMemory",{get:function(){return __wd;},configurable:true});}catch(e){}' +
+    'try{Object.defineProperty(self.navigator,"webdriver",{get:function(){return false;},configurable:true});}catch(e){}' +
+    'try{Object.defineProperty(self.navigator,"platform",{get:function(){return __wplat;},configurable:true});}catch(e){}' +
+    'try{Object.defineProperty(self.navigator,"userAgent",{get:function(){return __wua;},configurable:true});}catch(e){}' +
+    'try{Object.defineProperty(self.navigator,"languages",{get:function(){return [__wlang,__wlang.split("-")[0]];},configurable:true});}catch(e){}' +
+    '}catch(e){}})();';
+  function tryBase() {
+    try {
+      var h = window.location.href || 'https://localhost/';
+      return h.replace(/[^\/]*$/, '');
+    } catch(e) { return 'https://localhost/'; }
+  }
+  try {
+    var OrigWorker = window.Worker;
+    if (typeof OrigWorker === 'function' && !OrigWorker.__cpaBridged) {
+      var CpaWorker = function(url, opts) {
+        note('worker');
+        var s = '';
+        try { s = String(url); } catch(e) { return new OrigWorker(url, opts); }
+        if (s.indexOf('blob:') !== 0) return new OrigWorker(url, opts);
+        // واجهة مطابقة تمرر كل شيء للعامل الحقيقي بعد حقن الدرع
+        var facade = {};
+        var queue = [];
+        var real = null;
+        var dead = false;
+        var listeners = {};
+        function emit(type, ev) {
+          try {
+            var prop = facade['on' + type];
+            if (typeof prop === 'function') { try { prop.call(facade, ev); } catch(e) {} }
+            var arr = listeners[type] || [];
+            for (var i = 0; i < arr.length; i++) { try { arr[i].call(facade, ev); } catch(e) {} }
+          } catch(e) {}
+        }
+        function attachReal(r) {
+          real = r;
+          try {
+            r.onmessage = function(ev) { emit('message', ev); };
+            r.onerror = function(ev) { emit('error', ev); };
+            r.onmessageerror = function(ev) { emit('messageerror', ev); };
+          } catch(e) {}
+          while (queue.length && !dead) {
+            var m = queue.shift();
+            try { real.postMessage(m[0], m[1]); } catch(e) {}
+          }
+        }
+        facade.postMessage = maskFn(function(msg, transfer) {
+          if (real && !dead) { try { real.postMessage(msg, transfer); } catch(e) {} }
+          else if (!dead) queue.push([msg, transfer]);
+        }, 'postMessage');
+        facade.terminate = maskFn(function() { dead = true; queue = []; try { if (real) real.terminate(); } catch(e) {} }, 'terminate');
+        facade.addEventListener = maskFn(function(t, l) { (listeners[t] = listeners[t] || []).push(l); }, 'addEventListener');
+        facade.removeEventListener = maskFn(function(t, l) {
+          var a = listeners[t] || [];
+          var i = a.indexOf(l);
+          if (i !== -1) a.splice(i, 1);
+        }, 'removeEventListener');
+        facade.dispatchEvent = maskFn(function() { return true; }, 'dispatchEvent');
+        var fetchCode = function(done) {
+          try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', s, true);
+            xhr.onload = function() { done(xhr.status === 0 || (xhr.status >= 200 && xhr.status < 300) ? xhr.responseText : null); };
+            xhr.onerror = function() { done(null); };
+            xhr.send();
+          } catch(e) { done(null); }
+        };
+        fetchCode(function(code) {
+          if (dead) return;
+          try {
+            if (code === null) { attachReal(new OrigWorker(s, opts)); return; }
+            var blob = new Blob([(window.__cpaWorkerShield || '') + '\n;' + code], { type: 'text/javascript' });
+            attachReal(new OrigWorker(URL.createObjectURL(blob), opts));
+          } catch(e) {
+            try { attachReal(new OrigWorker(s, opts)); } catch(e2) {}
+          }
+        });
+        return facade;
+      };
+      CpaWorker.__cpaBridged = true;
+      CpaWorker.prototype = OrigWorker.prototype;
+      window.Worker = maskFn(CpaWorker, 'Worker');
+    }
+  } catch(e) {}
+
+  // ── واجهة الجسر العامة ──
+  Object.defineProperty(window, '__cpaBridge', {
+    value: {
+      v: 1,
+      note: note,
+      stats: function() { var c = {}; for (var k in hits) c[k] = hits[k]; return { score: scoreNow(), hits: c }; }
+    },
+    enumerable: false, writable: false, configurable: true
+  });
+  return 'bridge_ready_v1';
+})();
+        """.trimIndent()
+    }
+
+    /**
+     * Shield Self-Test — تدقيق ذاتي: يقرأ القيم المرصودة فعلياً (كأي موقع فاحص)
+     * ويقارنها بالمتوقع، ويخزن النتيجة في window.__cpaSelfTestResult.
+     * الأصلي يقرأها بعد ~2.5 ثانية (فحوص غير متزامنة: أصوات/تخزين/لوحة/بطارية).
+     */
+    fun buildShieldSelfTestScript(expectedLang: String = "en-US", expectedTz: String = "America/New_York"): String {
+        val wantLang = expectedLang.trim().takeIf {
+            it.matches(Regex("^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})?$"))
+        } ?: "en-US"
+        val wantTz = expectedTz.trim().takeIf { it.contains("/") && !it.contains("{") } ?: "America/New_York"
+        return """
+(function() {
+  window.__cpaSelfTestResult = null;
+  var WANT_LANG = '$wantLang';
+  var WANT_TZ = '$wantTz';
+  var out = [];
+  function chk(name, ok, got) { out.push({ n: name, ok: !!ok, got: String(got === undefined ? '' : got).slice(0, 72) }); }
+  try {
+    var ua = (navigator.userAgent || '').toLowerCase();
+    var mob = ua.indexOf('android') !== -1 || ua.indexOf('iphone') !== -1 || ua.indexOf('mobile') !== -1;
+    chk('webdriver_false', navigator.webdriver === false, navigator.webdriver);
+    var plat = '';
+    try { plat = navigator.platform || ''; } catch(e) {}
+    var platOk = mob ? (plat.indexOf('Linux') === 0 || plat === 'iPhone') : (plat === 'Win32' || plat === 'MacIntel' || plat.indexOf('Linux') === 0);
+    chk('platform_ua', platOk, plat);
+    var cores = 0;
+    try { cores = navigator.hardwareConcurrency || 0; } catch(e) {}
+    chk('cores_plausible', [2, 4, 6, 8, 12, 16].indexOf(cores) !== -1, cores);
+    var mem = -1;
+    try { mem = (typeof navigator.deviceMemory === 'number') ? navigator.deviceMemory : -1; } catch(e) {}
+    chk('memory_enum', mem === -1 || [0.25, 0.5, 1, 2, 4, 8].indexOf(mem) !== -1, mem);
+    var langs = [];
+    try { langs = navigator.languages || []; } catch(e) {}
+    chk('language_match', langs.length > 0 && langs[0] === WANT_LANG, (langs[0] || '') + ' want ' + WANT_LANG);
+    var rtz = '';
+    try { rtz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch(e) {}
+    chk('intl_timezone', rtz === WANT_TZ, rtz);
+    var off = 9999;
+    try { off = new Date().getTimezoneOffset(); } catch(e) {}
+    chk('tzoffset_sane', Math.abs(off) <= 840, off);
+    var dpr = 0;
+    try { dpr = window.devicePixelRatio || 0; } catch(e) {}
+    chk('dpr_plausible', [1, 1.25, 1.5, 2, 2.25, 2.5, 2.625, 3].indexOf(dpr) !== -1, dpr);
+    var sw = 0;
+    try { sw = screen.width || 0; } catch(e) {}
+    chk('screen_sane', sw >= 320 && sw <= 5120, sw + 'x' + (screen.height || 0));
+    var pl = -1;
+    try { pl = navigator.plugins ? navigator.plugins.length : -1; } catch(e) {}
+    chk('plugins_sane', mob ? (pl === 0) : (pl >= 3), pl);
+    var pdf = null;
+    try { pdf = navigator.pdfViewerEnabled; } catch(e) {}
+    chk('pdf_consistent', pdf === null || pdf === !mob, pdf);
+    var cd = 0;
+    try { cd = screen.colorDepth || 0; } catch(e) {}
+    chk('colordepth_24', cd === 24, cd);
+    var fine = false, coarse = false;
+    try { fine = matchMedia('(pointer: fine)').matches; coarse = matchMedia('(pointer: coarse)').matches; } catch(e) {}
+    chk('pointer_single', fine !== coarse, 'fine=' + fine + ' coarse=' + coarse);
+    var light = false;
+    try { light = matchMedia('(prefers-color-scheme: light)').matches; } catch(e) {}
+    chk('scheme_light', light === true, light);
+    var pngOk = false;
+    try {
+      var c = document.createElement('canvas');
+      c.width = 8; c.height = 8;
+      pngOk = (c.toDataURL().indexOf('data:image/png') === 0);
+    } catch(e) {}
+    chk('canvas_works', pngOk, pngOk);
+    var glOk = false, glCount = -1;
+    try {
+      var g = document.createElement('canvas').getContext('webgl');
+      if (g) {
+        var exts = g.getSupportedExtensions() || [];
+        glCount = exts.length;
+        glOk = glCount > 0 && glCount <= 28;
+      } else { glOk = true; glCount = 0; }
+    } catch(e) {}
+    chk('webgl_ext_capped', glOk, glCount);
+    var r1 = '', r2 = '';
+    try {
+      var a = document.body.getClientRects();
+      r1 = a.length > 0 ? (a[0].x + ',' + a[0].y) : 'empty';
+      var b = document.body.getClientRects();
+      r2 = b.length > 0 ? (b[0].x + ',' + b[0].y) : 'empty';
+    } catch(e) {}
+    chk('rects_stable', r1 === r2, r1);
+    var np = '';
+    try { np = window.Notification ? window.Notification.permission : 'absent'; } catch(e) {}
+    chk('notification_sane', np === 'absent' || np === 'default' || np === 'granted' || np === 'denied', np);
+    var ce = '';
+    try { ce = navigator.connection ? navigator.connection.effectiveType : 'absent'; } catch(e) {}
+    chk('connection_4g', ce === 'absent' || ce === '4g' || ce === '3g', ce);
+    chk('chrome_obj', mob ? true : (typeof window.chrome !== 'undefined'), typeof window.chrome);
+    chk('rtc_present', typeof window.RTCPeerConnection !== 'undefined', typeof window.RTCPeerConnection);
+    var gpuV = 'absent';
+    try { gpuV = typeof navigator.gpu; } catch(e) {}
+    chk('gpu_story', mob ? true : (gpuV !== 'undefined'), gpuV);
+    var dwOk = false, dwGot = '';
+    try {
+      var sww = screen.width || 0;
+      var q1 = matchMedia('(min-device-width: ' + sww + 'px)').matches;
+      var q2 = matchMedia('(min-device-width: ' + (sww + 1) + 'px)').matches;
+      dwOk = (q1 === true && q2 === false);
+      dwGot = sww + 'px';
+    } catch(e) { dwGot = 'throw'; }
+    chk('css_device_dim', dwOk, dwGot);
+    var pending = 5;
+    function finishAsync() {
+      pending--;
+      if (pending <= 0) done();
+    }
+    function done() {
+      var p = 0, f = [];
+      for (var i = 0; i < out.length; i++) { if (out[i].ok) p++; else f.push(out[i].n + '=' + out[i].got); }
+      window.__cpaSelfTestResult = { passed: p, failed: f.length, failures: f };
+    }
+    try {
+      if (navigator.geolocation && navigator.geolocation.getCurrentPosition) {
+        navigator.geolocation.getCurrentPosition(function(pos) {
+          try {
+            var la = pos.coords.latitude, lo = pos.coords.longitude;
+            chk('geo_finite', isFinite(la) && isFinite(lo) && !(la === 0 && lo === 0), la + ',' + lo);
+          } catch(e) { chk('geo_finite', false, 'cb-err'); }
+          finishAsync();
+        }, function() { chk('geo_finite', false, 'denied'); finishAsync(); }, { timeout: 1500 });
+      } else { chk('geo_finite', false, 'absent'); finishAsync(); }
+    } catch(e) { chk('geo_finite', false, 'throw'); finishAsync(); }
+    try {
+      if (window.speechSynthesis && speechSynthesis.getVoices) {
+        var vs = [];
+        try { vs = speechSynthesis.getVoices() || []; } catch(e) {}
+        chk('voices_present', vs.length >= 1, vs.length);
+      } else { chk('voices_present', true, 'absent-api'); }
+    } catch(e) { chk('voices_present', false, 'throw'); }
+    finishAsync();
+    function storageDone(ok, got) {
+      for (var i = 0; i < out.length; i++) { if (out[i].n === 'storage_quota') return; }
+      chk('storage_quota', ok, got);
+      finishAsync();
+    }
+    try {
+      if (navigator.storage && navigator.storage.estimate) {
+        navigator.storage.estimate().then(function(es) {
+          storageDone(es && es.quota > 1000000000, es ? es.quota : 0);
+        }).catch(function() { storageDone(false, 'reject'); });
+        setTimeout(function() { if (pending > 0) storageDone(false, 'timeout'); }, 1800);
+      } else { chk('storage_quota', true, 'absent-api'); finishAsync(); }
+    } catch(e) { chk('storage_quota', false, 'throw'); finishAsync(); }
+    try {
+      if (navigator.keyboard && navigator.keyboard.getLayoutMap) {
+        navigator.keyboard.getLayoutMap().then(function(m) {
+          var sz = 0;
+          try { sz = m.size || 0; } catch(e) {}
+          chk('kbd_map', sz >= 20, sz);
+          finishAsync();
+        }).catch(function() { chk('kbd_map', false, 'reject'); finishAsync(); });
+      } else { chk('kbd_map', true, 'absent-api'); finishAsync(); }
+    } catch(e) { chk('kbd_map', false, 'throw'); finishAsync(); }
+    try {
+      if (navigator.getBattery) {
+        navigator.getBattery().then(function(b) {
+          var lv = -1;
+          try { lv = b.level; } catch(e) {}
+          chk('battery_sane', lv > 0 && lv <= 1, lv);
+          finishAsync();
+        }).catch(function() { chk('battery_sane', false, 'reject'); finishAsync(); });
+      } else { chk('battery_sane', true, 'absent-api'); finishAsync(); }
+    } catch(e) { chk('battery_sane', false, 'throw'); finishAsync(); }
+  } catch(e) {
+    chk('harness', false, String(e && e.message || e).slice(0, 60));
+  }
+})();
+        """.trimIndent()
+    }
+
     fun buildTimezoneScript(timezone: String, language: String): String {
         val cleanTz = timezone.replace("'", "")
         val cleanLang = language.replace("'", "")
@@ -1347,6 +2188,23 @@ true;
     Date.prototype.getTimezoneOffset = maskFn(function() {
       return calculateTzOffset(this, window.__cpaTargetTz || tz);
     }, 'getTimezoneOffset');
+
+    // Intl.DateTimeFormat().resolvedOptions().timeZone — must agree with the spoofed zone
+    try {
+      if (typeof Intl !== 'undefined' && Intl.DateTimeFormat) {
+        var __cpaODTF = Intl.DateTimeFormat;
+        var __cpaOrigRes = __cpaODTF.prototype.resolvedOptions;
+        __cpaODTF.prototype.resolvedOptions = maskFn(function() {
+          var rr = __cpaOrigRes.call(this);
+          try { rr.timeZone = window.__cpaTargetTz || tz; } catch(e) {}
+          try {
+            var ll = window.__cpaTargetLang || lang;
+            rr.locale = ll;
+          } catch(e2) {}
+          return rr;
+        }, 'resolvedOptions');
+      }
+    } catch(e) {}
   } catch(e) {}
 })();
 true;

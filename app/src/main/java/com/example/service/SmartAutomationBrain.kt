@@ -760,12 +760,21 @@ object SmartAutomationBrain {
         val totalRuns = learning.values.sumOf { it.runs } + 1
         return tasks.sortedWith(
             compareByDescending<TaskEntity> { t ->
+                // ذكاء متقاطع: معدل تحويل فئات المهمة يرفع/يخفض أولويتها (±0.15)
+                val catBoost = try {
+                    val cats = TaskCategoryPlanner.parseCategories(t.categories)
+                    if (cats.isEmpty()) 0.0
+                    else {
+                        val avgCat = cats.map { TaskCategoryPlanner.categoryConversionRate(it) }.average()
+                        (avgCat - 0.5) * 0.3
+                    }
+                } catch (_: Exception) { 0.0 }
                 val s = learning[t.id]
-                if (s == null || s.runs == 0) Double.MAX_VALUE - t.createdAt / 1e15 // جرّب الجديد أولاً مرة واحدة
+                if (s == null || s.runs == 0) Double.MAX_VALUE - t.createdAt / 1e15 + catBoost // جرّب الجديد أولاً مرة واحدة
                 else {
                     val avg = s.successRate
                     val bonus = kotlin.math.sqrt(2.0 * kotlin.math.ln(totalRuns.toDouble()) / s.runs.toDouble())
-                    avg + 0.7 * bonus // معامل الاستكشاف 0.7
+                    avg + 0.7 * bonus + catBoost // معامل الاستكشاف 0.7
                 }
             }.thenBy { it.completedRuns }
         )
@@ -775,22 +784,29 @@ object SmartAutomationBrain {
         val ctr: Double get() = if (impressions == 0) 0.5 else clicks.toDouble() / (impressions + 1)
     }
 
-    /** Epsilon-greedy للنصوص: 85% استغلال الأفضل، 15% استكشاف نص جديد */
+    /** Epsilon-greedy للنصوص: 85% استغلال الأفضل CTR، 15% استكشاف نص جديد */
     fun selectOfferText(
         enabledTexts: List<String>,
         clickCounts: Map<String, Int>,
-        epsilon: Double = 0.15
+        epsilon: Double = 0.15,
+        impressions: Map<String, Int> = emptyMap()
     ): Int {
         if (enabledTexts.isEmpty()) return -1
         if (enabledTexts.size == 1) return 0
+        fun ctrOf(t: String): Double {
+            val imp = impressions[t] ?: 0
+            // بدون انطباعات موثقة: عدل لابلاس + إشارة النقرات الخام
+            if (imp <= 0) return ((clickCounts[t] ?: 0) + 0.5) / 2.0
+            return (clickCounts[t] ?: 0).toDouble() / (imp + 1).toDouble()
+        }
         if (Random.nextDouble() < epsilon) {
-            // استكشاف: نص لم يُجرّب كثيراً
-            val least = enabledTexts.indices.minByOrNull { clickCounts[enabledTexts[it]] ?: 0 } ?: 0
+            // استكشاف: الأقل ظهوراً (تغطية عادلة بدل الأقل نقرات)
+            val least = enabledTexts.indices.minByOrNull { impressions[enabledTexts[it]] ?: 0 } ?: 0
             return least
         }
-        // استغلال: الأعلى نقرات (مع كسر التعادل عشوائياً)
-        val maxClicks = enabledTexts.maxOf { clickCounts[it] ?: 0 }
-        val best = enabledTexts.indices.filter { (clickCounts[enabledTexts[it]] ?: 0) == maxClicks }
+        // استغلال: الأعلى CTR (مع كسر التعادل عشوائياً)
+        val maxCtr = enabledTexts.maxOf { ctrOf(it) }
+        val best = enabledTexts.indices.filter { ctrOf(enabledTexts[it]) == maxCtr }
         return best.random()
     }
 

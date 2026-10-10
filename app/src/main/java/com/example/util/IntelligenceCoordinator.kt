@@ -57,6 +57,76 @@ data class CrossLayerInsight(
     val predictedOutcome: String = "continue_optimized"
 )
 
+/**
+ * GeoIntel — ذكاء الجغرافيا: أي الدول تحوّل فعلاً؟
+ * يُسجل بعد كل مهمة (دولة البروكسي × تحويل؟) ويوجه اختيار البروكسي القادم.
+ */
+object GeoIntel {
+    private data class Stat(var runs: Int = 0, var conversions: Int = 0)
+
+    private val stats = java.util.concurrent.ConcurrentHashMap<String, Stat>()
+
+    fun normalize(raw: String): String {
+        val c = raw.trim().uppercase(java.util.Locale.US)
+        if (c.length == 2 && c.all { it in 'A'..'Z' }) return if (c == "UK") "GB" else c
+        // أسماء شائعة ← رموز
+        return when (c) {
+            "UNITED STATES", "USA", "AMERICA" -> "US"
+            "UNITED KINGDOM", "BRITAIN", "ENGLAND" -> "GB"
+            "CANADA" -> "CA"
+            "AUSTRALIA" -> "AU"
+            "GERMANY", "DEUTSCHLAND" -> "DE"
+            "FRANCE" -> "FR"
+            "SAUDI ARABIA", "SAUDI", "KSA" -> "SA"
+            "UNITED ARAB EMIRATES", "UAE" -> "AE"
+            "EGYPT" -> "EG"
+            else -> c.take(2).ifBlank { "US" }
+        }
+    }
+
+    fun record(countryRaw: String, converted: Boolean) {
+        val key = normalize(countryRaw)
+        val st = stats.computeIfAbsent(key) { Stat() }
+        synchronized(st) {
+            st.runs++
+            if (converted) st.conversions++
+        }
+    }
+
+    /** معدل التحويل 0..1 (0.5 محايد قبل البيانات) */
+    fun rate(countryRaw: String): Double {
+        val st = stats[normalize(countryRaw)] ?: return 0.5
+        synchronized(st) {
+            if (st.runs == 0) return 0.5
+            return st.conversions.toDouble() / st.runs.toDouble()
+        }
+    }
+
+    fun runs(countryRaw: String): Int = stats[normalize(countryRaw)]?.runs ?: 0
+
+    fun topCountries(limit: Int = 3): String {
+        val ranked = stats.entries.filter { it.value.runs >= 2 }
+            .sortedByDescending {
+                val s = it.value
+                s.conversions.toDouble() / s.runs.coerceAtLeast(1).toDouble()
+            }.take(limit)
+        if (ranked.isEmpty()) return "لا بيانات بعد"
+        return ranked.joinToString("، ") {
+            val s = it.value
+            "${it.key} (${(s.conversions.toDouble() / s.runs.toDouble() * 100).toInt()}%/${s.runs})"
+        }
+    }
+
+    fun snapshot(): Map<String, Pair<Int, Int>> =
+        stats.entries.associate { it.key to Pair(it.value.runs, it.value.conversions) }
+
+    fun restore(snapshot: Map<String, Pair<Int, Int>>) {
+        for ((k, v) in snapshot) {
+            stats[normalize(k)] = Stat(v.first.coerceAtLeast(0), v.second.coerceAtLeast(0))
+        }
+    }
+}
+
 class IntelligenceCoordinator(
     val proxyBridge: LocalSocks5HttpBridge,
     private val proxyManager: WebProxyManager,
@@ -102,6 +172,74 @@ class IntelligenceCoordinator(
     private var lastLoggedActions: List<String> = emptyList()
     @Volatile
     private var cycleCount: Int = 0
+
+    /** آخر نقاط فحص بصمة رصدها الجسر من الصفحات (0 = لا فحص مرصود) */
+    @Volatile
+    var lastShieldScore: Int = 0
+        private set
+
+    /** سمعة النطاقات: أعلى نقاط فحص لكل مضيف — تُبنى ذاتياً عبر الجلسة */
+    private val hostileHosts = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    fun hostileHostSummary(): String {
+        val top = hostileHosts.entries.sortedByDescending { it.value }.take(3)
+        if (top.isEmpty()) return "لا فحص مرصود"
+        return top.joinToString("، ") { "${it.key} (${it.value})" }
+    }
+
+    /** هل هذا المضيف فاحص معروف؟ — يقرأه معترض الطلبات لتشديد الرقابة عليه */
+    fun isHostileHost(host: String): Boolean {
+        val h = host.trim().lowercase()
+        if (h.isBlank()) return false
+        val direct = hostileHosts[h] ?: 0
+        if (direct >= 12) return true
+        // نطاق فرعي لمضيف معادٍ مسجل
+        return hostileHosts.any { (known, score) -> score >= 15 && (h == known || h.endsWith(".$known")) }
+    }
+
+    private val surveillanceBlocks = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    fun surveillanceBlockCount(): Int = surveillanceBlocks.values.sum()
+
+    /** اعتراض المراقبة أبلغ عن حظر — عدّاد + سجل أول مرة لكل نطاق */
+    fun noteSurveillanceBlock(domain: String) {
+        val clean = domain.trim().lowercase().take(80)
+        if (clean.isBlank()) return
+        val n = (surveillanceBlocks[clean] ?: 0) + 1
+        surveillanceBlocks[clean] = n
+        if (n == 1) {
+            ilog("info", "🛡️ [اعتراض صارم]: حُظر متتبع إعادة الجلسة $clean — تسجيل حركاتك محظور، والصفحة تعمل طبيعياً")
+        }
+    }
+
+    /** حكم الاختبار الذاتي للدرع — فشل أي إشارة = شذوذ يستحق المراجعة */
+    fun noteSelfTest(passed: Int, failed: Int, failures: String) {
+        if (failed > 0) {
+            sessionAnomalyCount += failed
+            ilog("warning", "🧪 [اختبار الدرع الذاتي]: $passed ناجح / $failed فاشل ← $failures — راجع التزوير قبل المتابعة")
+        } else {
+            ilog("success", "🧪 [اختبار الدرع الذاتي]: $passed/$passed ناجح — الدرع سليم كما تراه المواقع ✅")
+        }
+    }
+
+    /** يغذيها AppViewModel من قياس الجسر — ذكاء يفهم نوايا المواقع */
+    fun noteShieldProbe(score: Int, detail: String, host: String = "") {
+        lastShieldScore = score
+        val cleanHost = host.trim().take(60)
+        if (cleanHost.isNotBlank() && score > 0) {
+            hostileHosts.merge(cleanHost, score) { a, b -> maxOf(a, b) }
+            if (hostileHosts.size > 25) {
+                hostileHosts.entries.sortedBy { it.value }.take(hostileHosts.size - 25)
+                    .forEach { hostileHosts.remove(it.key) }
+            }
+        }
+        if (score >= 15) {
+            sessionAnomalyCount++
+            ilog("warning", "🛰️ [فهم نوايا الموقع]: فحص بصمة عدواني (نقاط=$score | $detail) — الدرع يحوّل كل الطلبات للمزيف، والشذوذ رُفع للمنسق")
+        } else {
+            ilog("info", "🛰️ [فهم نوايا الموقع]: لمسات بصمة خفيفة (نقاط=$score | $detail) — ضمن الطبيعي")
+        }
+    }
 
     // مزودات الحالة الحية من AppViewModel (تُربط بعد الإنشاء)
     private var identityProvider: (() -> GeneratedIdentity)? = null
@@ -264,6 +402,7 @@ class IntelligenceCoordinator(
     /** فحص ما قبل التشغيل: يجمع التقارير الثلاثة ويخرج رؤية واحدة ويوزعها + سجل كامل */
     fun runPreflight(): CrossLayerInsight {
         ilog("info", "🔍 بدء الفحص الشامل قبل التشغيل: فحص البروكسي + الهوية + السلوك...")
+        ilog("info", "🌍 [ذكاء الجغرافيا]: أفضل الدول تحويلاً: ${GeoIntel.topCountries()} — ستُفضل بروكسياتها تلقائياً")
         val proxy = analyzeProxyRecursive()
         ilog(
             "info",
@@ -279,7 +418,12 @@ class IntelligenceCoordinator(
             "info",
             "🧠 السلوك: مرحلة=${behavior.stage}/6 | أنسنة=${behavior.humanizationScore}% | تعلق=${behavior.stuckCount} | نجاح=${(behavior.successRate * 100).toInt()}% | تأخير تكيفي=${behavior.adaptiveDelay}ms"
         )
-        val insight = synthesizeCrossLayerInsight(proxy, identity, behavior)
+        val shield = analyzeShieldRecursive()
+        ilog(
+            if (shield.ok) "info" else "warning",
+            "🛡️ الدرع: محقون=v${shield.applied} | حالي=v${shield.current} | ${if (shield.ok) "محدث ✅" else "قديم ⚠️ — البصمة ناقصة أمام الكواشف الحديثة"}"
+        )
+        val insight = synthesizeCrossLayerInsight(proxy, identity, behavior, shield.ok)
         logDecision(insight, isPreflight = true)
         emitInsight(insight)
         return insight
@@ -288,10 +432,18 @@ class IntelligenceCoordinator(
     private fun performRecursiveAnalysis() {
         try {
             cycleCount++
+            // نقاط الفحص تتضاءل مع الزمن (فحص قديم ≠ خطر حالي) — كل دقيقة ×0.7
+            if (lastShieldScore > 0 && cycleCount % 12 == 0) {
+                lastShieldScore = (lastShieldScore * 0.7).toInt()
+            }
             val proxy = analyzeProxyRecursive()
             val identity = analyzeIdentityRecursive()
             val behavior = analyzeAutomationRecursive()
-            val insight = synthesizeCrossLayerInsight(proxy, identity, behavior)
+            val shield = analyzeShieldRecursive()
+            if (!shield.ok) {
+                ilog("warning", "🛡️ الدرع قديم (محقون=v${shield.applied} ≠ حالي=v${shield.current}) — يُنصح بإعادة تحميل الصفحة لحقن الدرع الجديد")
+            }
+            val insight = synthesizeCrossLayerInsight(proxy, identity, behavior, shield.ok)
             issueAdaptiveCommands(insight)
             lastCrossLayerInsight = insight
             if (insight.riskLevel == "critical" || insight.riskLevel == "high") {
@@ -313,7 +465,7 @@ class IntelligenceCoordinator(
                 running && cycleCount % 6 == 0 -> {
                     ilog(
                         "info",
-                        "💓 نبضة [دورة #$cycleCount]: خطر=${insight.riskLevel} | نمط=${insight.behavioralPattern} | أنسنة=${behavior.humanizationScore}% | بروتوكول=${proxy.protocol} | القرار: ${insight.predictedOutcome}"
+                        "💓 نبضة [دورة #$cycleCount]: خطر=${insight.riskLevel} | نمط=${insight.behavioralPattern} | أنسنة=${behavior.humanizationScore}% | بروتوكول=${proxy.protocol} | فحص المواقع=$lastShieldScore | أخطر النطاقات: ${hostileHostSummary()} | مراقبة محظورة=${surveillanceBlockCount()} | القرار: ${insight.predictedOutcome}"
                     )
                 }
             }
@@ -386,7 +538,8 @@ class IntelligenceCoordinator(
     private fun synthesizeCrossLayerInsight(
         proxyReport: ProxyHealthReport,
         identityReport: IdentityFingerprintReport,
-        automationReport: AutomationBehaviorReport
+        automationReport: AutomationBehaviorReport,
+        shieldOk: Boolean = true
     ): CrossLayerInsight {
         val proxyImpact = calculateProxyImpactOnAutomation(proxyReport, automationReport)
         val identityScore = calculateIdentityConsistency(identityReport)
@@ -400,7 +553,9 @@ class IntelligenceCoordinator(
             proxyReport.isHealthy,
             identityReport.geoConsistency,
             automationReport.stuckCount,
-            automationReport.escapeActionsTaken
+            automationReport.escapeActionsTaken,
+            shieldOk,
+            lastShieldScore
         )
 
         val (predictedOutcome, recommendedActions) = when {
@@ -516,17 +671,33 @@ class IntelligenceCoordinator(
         else "mixed_pattern"
     }
 
+    // ── 4) ذكاء الدرع: هل البصمة المحقونة من نفس جيل الكود؟ ──
+    private data class ShieldReport(val ok: Boolean, val applied: Int, val current: Int)
+
+    private fun analyzeShieldRecursive(): ShieldReport {
+        val applied = automationStateProvider?.invoke()?.shieldVersionApplied ?: 0
+        val current = try {
+            com.example.service.AutomationScriptBuilder.SHIELD_VERSION
+        } catch (_: Exception) { applied }
+        return ShieldReport(ok = applied == 0 || applied == current, applied = applied, current = current)
+    }
+
     private fun assessRiskLevel(
         proxyHealthy: Boolean,
         identityConsistent: Boolean,
         stuckCount: Int,
-        escapeActions: Int
+        escapeActions: Int,
+        shieldOk: Boolean = true,
+        shieldProbe: Int = 0
     ): String {
         var riskScore = 0.0
         if (!proxyHealthy) riskScore += 0.3
         if (!identityConsistent) riskScore += 0.25
         riskScore += stuckCount * 0.15
         riskScore += if (escapeActions >= 3) 0.2 else if (escapeActions >= 1) 0.1 else 0.0
+        if (!shieldOk) riskScore += 0.2 // درع قديم = بصمة ناقصة أمام كاشف حديث
+        // الموقع يفحص البصمة بنشاط + إشارات أخرى = خطر مركب (حتى 0.25)
+        if (shieldProbe > 0) riskScore += (shieldProbe.coerceAtMost(30).toDouble() / 30.0) * 0.25
         if (riskScore > 0.5) riskScore *= 1.2
         return when {
             riskScore >= 1.0 -> "critical"
