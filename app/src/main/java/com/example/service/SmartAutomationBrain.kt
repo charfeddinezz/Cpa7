@@ -268,6 +268,37 @@ object SmartAutomationBrain {
             )
         }
 
+        // 3.7) جدار الصفحة البيضاء: تحميل مكتمل بلا أي محتوى = رفض ASN/بصمة (شائع مع AWS/Cloudflare)
+        // حذر: يُشترط تكرار الرؤية (صفحة تحميل حقيقية تبدو فارغة أول مرة)
+        val isBlankWall = !isLoading &&
+            !report.isConfirmationPage && !report.isRedirectBridge &&
+            report.buttonsCount == 0 && report.fieldsCount == 0 &&
+            report.radioGroupsCount == 0 && report.selectCount == 0 &&
+            report.checkboxesCount == 0 && !report.hasLocker &&
+            !report.hasOfferClickCandidate && report.title.trim().length < 4 &&
+            report.url.isNotBlank() &&
+            (samePageRepeat >= 1 || effectiveNoProgress >= 2)
+        if (isBlankWall) {
+            return SmartDecision(
+                action = NextAction.RELOAD_RETRY,
+                titleAr = "⬜ جدار الصفحة البيضاء — إخلاء المسار المحروق",
+                titleEn = "Blank-wall eviction — rotate burned route",
+                reasonAr = "اكتمل التحميل (${report.url.take(48)}) بلا أزرار ولا حقول ولا عنوان — نمط رفض الشبكة/البصمة. القرار: حرق البروكسي الحالي، التدوير، وإعادة التحميل.",
+                reasonEn = "Loaded blank page = ASN/fingerprint refusal. Burn proxy and rotate.",
+                confidence = 89,
+                delayMsBeforeNextCycle = boostedDelay(3000),
+                prioritySteps = listOf("تسجيل البروكسي كمحروق", "تدوير البروكسي فوراً", "فرض وضع الجوال عند التكرار", "إعادة التحميل بهوية جديدة"),
+                needsReload = true,
+                needsProxySwitch = true,
+                isStuck = true,
+                executionMode = "blank_wall_evict",
+                shouldExtendTaskTime = false,
+                funnelStageIndex = report.funnelStageIndex,
+                stepsAdvanced = stepsSoFar,
+                detectedQuestion = currentQ
+            )
+        }
+
         // 4) عالق — غيّر الإستراتيجية ونفّذ كود التعافي متعدد المراحل فوراً
         if (isStuck) {
             val alternative = pickEscapeStrategy(report, memory, effectiveNoProgress)

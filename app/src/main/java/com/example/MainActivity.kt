@@ -135,6 +135,12 @@ class MainActivity : ComponentActivity() {
                 } catch (_: Exception) {
                 }
             }
+            if (!request.isForMainFrame && request.method.equals("GET", ignoreCase = true)) {
+                try {
+                    headerCorrectedXhr(request)?.let { return it }
+                } catch (_: Exception) {
+                }
+            }
             return super.shouldInterceptRequest(view, request)
         }
 
@@ -151,18 +157,69 @@ class MainActivity : ComponentActivity() {
             val current = request.requestHeaders["Accept-Language"] ?: request.requestHeaders["accept-language"]
             if (!current.isNullOrBlank() && current.equals(want, ignoreCase = true)) return null
 
-            var urlStr = request.url.toString()
+            return executeCorrectedLoad(
+                startUrl = request.url.toString(),
+                request = request,
+                wantLanguage = want,
+                stripAppTag = true,
+                syncFinalUrl = true
+            )
+        }
+
+        /**
+         * XHR/fetch GET correction: the site's own signing JS (e.g. signature-agent per RFC 9421)
+         * reads browser state — if its API calls carried a different Accept-Language than the
+         * spoofed navigator.language, the signature mismatches and the server blank-walls us.
+         * Only GET XHR/fetch (no body to lose), never Range/media streams.
+         */
+        private fun headerCorrectedXhr(request: WebResourceRequest): WebResourceResponse? {
+            val want = acceptLanguageProvider().trim()
+            if (want.isBlank() || want.contains("{")) return null
+            val scheme = request.url.scheme?.lowercase() ?: return null
+            if (scheme != "http" && scheme != "https") return null
+            val h = request.requestHeaders
+            val isXhr = h.containsKey("X-Requested-With") || h.containsKey("x-requested-with")
+            val dest = h["Sec-Fetch-Dest"] ?: h["sec-fetch-dest"] ?: ""
+            val isFetchApi = dest.equals("empty", ignoreCase = true)
+            if (!isXhr && !isFetchApi) return null
+            if (h.containsKey("Range") || h.containsKey("range")) return null
+            val current = h["Accept-Language"] ?: h["accept-language"]
+            if (!current.isNullOrBlank() && current.equals(want, ignoreCase = true)) return null
+
+            return executeCorrectedLoad(
+                startUrl = request.url.toString(),
+                request = request,
+                wantLanguage = want,
+                stripAppTag = false, // XHR AJAX marker required by some backends — keep it
+                syncFinalUrl = false
+            )
+        }
+
+        /**
+         * Shared corrected-load executor: forced Accept-Language, cookies synced, redirects
+         * followed manually. Fail-open (null) on any doubt so pages never break.
+         */
+        private fun executeCorrectedLoad(
+            startUrl: String,
+            request: WebResourceRequest,
+            wantLanguage: String,
+            stripAppTag: Boolean,
+            syncFinalUrl: Boolean
+        ): WebResourceResponse? {
+            var urlStr = startUrl
             val baseHeaders = request.requestHeaders.toMutableMap()
             baseHeaders.remove("Accept-Language")
             baseHeaders.remove("accept-language")
-            baseHeaders["Accept-Language"] = want
+            baseHeaders["Accept-Language"] = wantLanguage
             baseHeaders.remove("Content-Length")
             baseHeaders.remove("content-length")
             baseHeaders.remove("Host")
             baseHeaders.remove("host")
-            // App-identity leak: WebView tags requests with the host app package — strip it
-            baseHeaders.remove("X-Requested-With")
-            baseHeaders.remove("x-requested-with")
+            if (stripAppTag) {
+                // App-identity leak: WebView tags requests with the host app package — strip it
+                baseHeaders.remove("X-Requested-With")
+                baseHeaders.remove("x-requested-with")
+            }
 
             val bridgePort = bridgePortProvider()
             val proxy = if (bridgePort in 1..65535) {
@@ -219,7 +276,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     } catch (_: Exception) {}
-                    if (urlStr != request.url.toString()) {
+                    if (syncFinalUrl && urlStr != request.url.toString()) {
                         try { onMainFrameFinalUrl?.invoke(urlStr) } catch (_: Exception) {}
                     }
                     val reason = try { conn.responseMessage } catch (_: Exception) { null } ?: "OK"

@@ -58,6 +58,57 @@ data class CrossLayerInsight(
 )
 
 /**
+ * ProxyAsnIntel — ذكاء الشبكة: هل خروج البروكسي سكني أم مركز بيانات أم VPN تجاري؟
+ * المواقع الحساسة (AWS/Cloudflare) تحجب نطاقات الاستضافة → نعاقبها ونفضل السكني.
+ */
+object ProxyAsnIntel {
+    private val VPN_KEYWORDS = listOf(
+        "nordvpn", "surfshark", "expressvpn", "private internet access", "protonvpn",
+        "mullvad", "windscribe", "tunnelbear", "cyberghost", "ipvanish", "vyprvpn",
+        "purevpn", "hidemyass", "vpn", "virtual private", "zscaler"
+    )
+    private val RESIDENTIAL_KEYWORDS = listOf(
+        "comcast", "xfinity", "verizon", "at&t", "spectrum", "charter", "cox",
+        "t-mobile", "tmobile", "sprint", "vodafone", "orange", "telefonica",
+        "deutsche telekom", "bt group", "virgin media", "sky broadband", "rogers",
+        "bell canada", "telus", "videotron", "optus", "telstra", "softbank", "ntt",
+        "kddi", "stc", "mobily", "zain", "etisalat", "ooredoo", "free sas", "sfr",
+        "bouygues", "tim", "windtre", "fastweb", "movistar", "claro", "vivo",
+        "kpn", "ziggo", "proximus", "telenet", "swisscom", "sunrise", "magenta",
+        "play", "plusnet", "talktalk", "ee ", "three", "o2", "jio", "airtel",
+        "globe", "pldt", "telkomsel", "indosat", "maxis", "celcom", "ais", "true ",
+        "dtac", "viettel", "starhub", "singtel", "frontier", "centurylink", "lumen"
+    )
+    private val DATACENTER_KEYWORDS = listOf(
+        "amazon", "aws", "digitalocean", "hetzner", "ovh", "vultr", "linode",
+        "contabo", "leaseweb", "choopa", "colocrossing", "psychz", "quadranet",
+        "cogent", "datacenter", "data center", "hosting", "hostinger", "alibaba",
+        "tencent", "oracle", "azure", "ibm cloud", "serverhost", "m247", "packet",
+        "latitude.sh", "buyvm", "ramnode", "vps", "colocation", "dedicated",
+        "cloud", "colo", "asn-"
+    )
+
+    fun classify(ispRaw: String, hostRaw: String = ""): String {
+        val t = "${ispRaw.trim().lowercase()} ${hostRaw.trim().lowercase()}"
+        if (t.isBlank()) return "unknown"
+        if (VPN_KEYWORDS.any { t.contains(it) }) return "vpn"
+        if (RESIDENTIAL_KEYWORDS.any { t.contains(it) }) return "residential"
+        if (DATACENTER_KEYWORDS.any { t.contains(it) }) return "datacenter"
+        return "unknown"
+    }
+
+    /** معامل الضرب على نقاط البروكسي + السبب للسجل */
+    fun factor(ispRaw: String, hostRaw: String = ""): Pair<Double, String> {
+        return when (classify(ispRaw, hostRaw)) {
+            "residential" -> 1.15 to "سكني ✅"
+            "datacenter" -> 0.75 to "مركز بيانات ⚠️"
+            "vpn" -> 0.6 to "VPN تجاري ⛔"
+            else -> 1.0 to "غير معروف"
+        }
+    }
+}
+
+/**
  * GeoIntel — ذكاء الجغرافيا: أي الدول تحوّل فعلاً؟
  * يُسجل بعد كل مهمة (دولة البروكسي × تحويل؟) ويوجه اختيار البروكسي القادم.
  */

@@ -251,6 +251,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // ── Full-automation hardening (P0/P1/P2/P3) ──
     private val taskFailureCount: MutableMap<String, Int> = mutableMapOf()
     private val taskRetryLimit: Int = 3
+    // ── Blank-wall intelligence: عدّاد الجدران البيضاء لكل مهمة + المهمة الجارية ──
+    private val blankWallCount: MutableMap<String, Int> = mutableMapOf()
+    private var currentRunTask: TaskEntity? = null
+
+    /** البروكسي المطابق للإعدادات الحالية (يُستخدم للحرق/التقييم) */
+    private suspend fun findCurrentProxyItem(): com.example.data.model.ProxyItem? {
+        return try {
+            val s = _settings.value
+            if (!s.proxyEnabled || s.proxyHost.isBlank()) return null
+            proxyDao.getAllProxiesList().firstOrNull {
+                it.host.equals(s.proxyHost.trim(), ignoreCase = true) &&
+                    it.port.toString() == s.proxyPort.trim()
+            }
+        } catch (_: Exception) { null }
+    }
     private var automationStartTime: Long = 0L
     private val learningPrefsKey: String = "brain_learning_json_v1"
     private val logsPrefsKey: String = "persisted_logs_json_v1"
@@ -1492,6 +1507,33 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 taskLearning = learningForTask
             )
             lastSmartDecision = decision
+            // ⬜ Blank-wall intelligence: حرق + تدوير + تحول جوال عند التكرار
+            if (decision.executionMode == "blank_wall_evict") {
+                val tid = currentState.currentTaskId
+                if (tid != null) {
+                    val n = (blankWallCount[tid] ?: 0) + 1
+                    blankWallCount[tid] = n
+                    addLog("warning", "⬜ [جدار أبيض #$n]: '${report.url.take(56)}' فارغة بعد التحميل — رفض شبكة/بصمة. حرق البروكسي والتدوير.", currentState.currentTaskName)
+                    try {
+                        findCurrentProxyItem()?.let {
+                            proxyDao.recordProxyFailure(it.id)
+                            proxyDao.recordProxyFailure(it.id)
+                        }
+                    } catch (_: Exception) {}
+                    val runTask = currentRunTask
+                    if (n >= 2 && runTask != null &&
+                        !runTask.userAgent.contains("mobile", ignoreCase = true) &&
+                        !runTask.userAgent.contains("android", ignoreCase = true)
+                    ) {
+                        try {
+                            val forced = runTask.copy(userAgent = "random_mobile")
+                            taskDao.updateTask(forced)
+                            currentRunTask = forced
+                            addLog("warning", "📱 [تكيّف الموقع]: جدار متكرر على ديسكتوب — فُرض وضع الجوال على '${runTask.name}' (الموقع يطلب بيئة جوال).", currentState.currentTaskName)
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
             brainMemory = SmartAutomationBrain.updateMemory(brainMemory, report, decision)
             val quality = SmartAutomationBrain.sessionQuality(
                 brainMemory,
@@ -2044,13 +2086,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 com.example.util.GeoIntel.rate(p.country.ifBlank { "US" })
             } catch (_: Exception) { 0.5 }
             val geoFactor = 0.85 + (geoRate * 0.3)
+            // ذكاء الشبكة: سكني يُفضل، مركز بيانات/VPN تجاري يُعاقب (حساسية AWS/Cloudflare)
+            val asnFactor = try {
+                com.example.util.ProxyAsnIntel.factor(p.isp, p.host).first
+            } catch (_: Exception) { 1.0 }
             SmartAutomationBrain.scoreProxyForTask(
                 successRate = if (p.status == "working") successRate.coerceAtLeast(0.6) else successRate,
                 pingMs = p.lastPingMs,
                 failCount = p.failCount,
                 lastFailAgeMin = lastFailAgeMin,
                 qualityScore = p.score
-            ) * crossFactor * geoFactor
+            ) * crossFactor * geoFactor * asnFactor
         }
         val best = candidates.maxByOrNull { crossScore(it) }
         // سجل القرار: أي بروكسي اختير ولماذا — ماذا فعلنا وماذا سنتوقع
@@ -2063,9 +2109,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val geoRate = try {
                 (com.example.util.GeoIntel.rate(p.country.ifBlank { "US" }) * 100).toInt()
             } catch (_: Exception) { 50 }
+            val asnLabel = try {
+                com.example.util.ProxyAsnIntel.factor(p.isp, p.host).second
+            } catch (_: Exception) { "" }
             addLog(
                 "info",
-                "🧠 [اختيار البروكسي]: ${p.host}:${p.port} [${p.type.uppercase()}] (${p.country.ifBlank { "??" }}) | نجاح مهام=$successRate% | نجاح تطبيق=$applyRate% | تحويل الدولة=$geoRate% | ping=${p.lastPingMs}ms | التوقع: مسار مستقر لهذه الدورة"
+                "🧠 [اختيار البروكسي]: ${p.host}:${p.port} [${p.type.uppercase()}] (${p.country.ifBlank { "??" }} | $asnLabel) | نجاح مهام=$successRate% | نجاح تطبيق=$applyRate% | تحويل الدولة=$geoRate% | ping=${p.lastPingMs}ms | التوقع: مسار مستقر لهذه الدورة"
             )
         }
         return best
@@ -2762,6 +2811,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // 🧠 Fresh awareness per task repetition — don't carry stale stuck state
         brainMemory = SmartAutomationBrain.initialMemory()
         completionReceivedForCurrentTask = false
+        currentRunTask = task
         // ذكاء موزع: لاحظ طلب الهروب من المنسق (العقل يستهلكه وينفذه داخل decide)
         if (SmartAutomationBrain.peekEscapeRequest()) {
             _automationState.update { it.copy(brainExecutionMode = "alt_option_3") }
@@ -3085,10 +3135,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 addLog("info", "🪪 [دوران مُنفذ]: تم تدوير الهوية بعد المهمة بطلب متقاطع — المهمة القادمة بهوية جديدة.", task.name)
             }
             if (s.proxyEnabled && s.proxyHost.isNotBlank()) {
-                val match = proxyDao.getAllProxiesList().firstOrNull {
-                    it.host.equals(s.proxyHost.trim(), ignoreCase = true) &&
-                        it.port.toString() == s.proxyPort.trim()
-                }
+                val match = findCurrentProxyItem()
                 // ذكاء الجغرافيا: سجل تحويل هذه الدولة (من البروكسي الفعلي أو الجغرافيا)
                 val runCountry = match?.country?.takeIf { it.isNotBlank() } ?: geo.countryCode
                 com.example.util.GeoIntel.record(runCountry, converted)
@@ -3136,6 +3183,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         addLog(if (converted) "success" else "info", "🧠 [تعلم]: ${task.name} → تحويل=${if (converted) "نعم ✅" else "لا"} | معدل النجاح التراكمي: $rate% (${taskLearning[task.id]?.runs} runs)", task.name)
+        if (currentRunTask?.id == task.id) currentRunTask = null
     }
 
     private suspend fun runMode1(task: TaskEntity) {

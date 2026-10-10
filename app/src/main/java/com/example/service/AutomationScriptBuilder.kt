@@ -8,7 +8,7 @@ import org.json.JSONObject
 object AutomationScriptBuilder {
 
     /** نسخة الدرع — يرفعها المطور مع كل تقوية؛ المنسق يكشف الدرع القديم ويحذر */
-    const val SHIELD_VERSION: Int = 10
+    const val SHIELD_VERSION: Int = 11
 
     fun buildAntiDetectionScript(
         proxyIp: String = "",
@@ -436,6 +436,21 @@ object AutomationScriptBuilder {
         } catch(e) {}
         try {
           Object.defineProperty(navigator, 'presentation', { get: __cpaMaskNative(function() { return undefined; }, 'get presentation'), enumerable: true, configurable: true });
+        } catch(e) {}
+        // Touch APIs: 'ontouchstart' in window is TRUE on a phone even with desktop UA — delete it
+        try { delete window.ontouchstart; } catch(e) {}
+        try {
+          Object.defineProperty(window, 'TouchEvent', { get: __cpaMaskNative(function() { return undefined; }, 'get TouchEvent'), configurable: true });
+        } catch(e) {}
+        try {
+          Object.defineProperty(window, 'Touch', { get: __cpaMaskNative(function() { return undefined; }, 'get Touch'), configurable: true });
+        } catch(e) {}
+      } else {
+        // Mobile-UA: touch MUST exist (its absence = emulator signal)
+        try {
+          if (!('ontouchstart' in window)) {
+            Object.defineProperty(window, 'ontouchstart', { value: null, writable: true, enumerable: true, configurable: true });
+          }
         } catch(e) {}
       }
     } catch(e) {}
@@ -1312,6 +1327,13 @@ object AutomationScriptBuilder {
           defineProtoGetter(subNavProto, targetWin.navigator, 'hardwareConcurrency', function() { return __hwCores; });
           defineProtoGetter(subNavProto, targetWin.navigator, 'deviceMemory', function() { return __hwMem; });
           defineProtoGetter(subNavProto, targetWin.navigator, 'maxTouchPoints', function() { return __touchPts; });
+          try {
+            if (!__isMobile) {
+              try { delete targetWin.ontouchstart; } catch(e) {}
+            } else if (!('ontouchstart' in targetWin)) {
+              try { Object.defineProperty(targetWin, 'ontouchstart', { value: null, writable: true, enumerable: true, configurable: true }); } catch(e) {}
+            }
+          } catch(e) {}
           defineProtoGetter(subNavProto, targetWin.navigator, 'language', function() { return window.__cpaTargetLang || '$cleanLang'; });
           defineProtoGetter(subNavProto, targetWin.navigator, 'languages', function() { var l = window.__cpaTargetLang || '$cleanLang'; return [l, l.split('-')[0]]; });
           if (__rawUa.length > 0 && __rawUa.toLowerCase() !== 'random') {
@@ -1742,8 +1764,8 @@ true;
     if (navigator.storage && navigator.storage.estimate) countWrap(navigator.storage, 'estimate', 'storage');
   } catch(e) {}
 
-  // ── تحويلات الجسر: ذاكرة الأداء + حصة التخزين (متناسقة مع فئة الجهاز) ──
-  var HW_MEM = MOBILE ? [4, 6, 8][H(102) % 3] : [4, 8, 8, 16][H(102) % 4];
+  // ── تحويلات الجسر: ذاكرة الأداء + حصة التخزين (مطابقة تماماً ل pools الدرع الرئيسي) ──
+  var HW_MEM = MOBILE ? [4, 4, 8][H(102) % 3] : [4, 8, 8][H(102) % 3];
   try {
     if (window.performance && window.performance.memory) {
       var heapLimit = HW_MEM * 1073741824;
@@ -2065,6 +2087,18 @@ true;
     chk('connection_4g', ce === 'absent' || ce === '4g' || ce === '3g', ce);
     chk('chrome_obj', mob ? true : (typeof window.chrome !== 'undefined'), typeof window.chrome);
     chk('rtc_present', typeof window.RTCPeerConnection !== 'undefined', typeof window.RTCPeerConnection);
+    var hasTouch = false;
+    try { hasTouch = ('ontouchstart' in window); } catch(e) {}
+    chk('touch_consistent', hasTouch === mob, 'touch=' + hasTouch + ' mobile=' + mob);
+    var heapOk = true, heapGot = 'absent-api';
+    try {
+      if (window.performance && window.performance.memory && typeof navigator.deviceMemory === 'number') {
+        var limGB = window.performance.memory.jsHeapSizeLimit / 1073741824;
+        heapOk = limGB + 0.001 >= navigator.deviceMemory;
+        heapGot = limGB.toFixed(1) + 'GB vs mem=' + navigator.deviceMemory;
+      }
+    } catch(e) { heapGot = 'throw'; }
+    chk('heap_ge_memory', heapOk, heapGot);
     var gpuV = 'absent';
     try { gpuV = typeof navigator.gpu; } catch(e) {}
     chk('gpu_story', mob ? true : (gpuV !== 'undefined'), gpuV);
