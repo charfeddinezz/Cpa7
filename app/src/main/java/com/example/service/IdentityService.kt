@@ -176,6 +176,49 @@ object IdentityService {
 
     private val rnd = Random()
 
+    // ── Intelligence API: ذكاء الهوية — يحلل ويوجه ويوزع ──
+    @Volatile
+    var scheduleRotation: Boolean = false
+
+    @Volatile
+    var lastRotationMs: Long = 0L
+
+    @Volatile
+    private var lastProxyIssue: String = ""
+
+    fun scheduleIdentityRotation() {
+        scheduleRotation = true
+        Log.i("IdentityService", "Intelligence: identity rotation scheduled after current task")
+    }
+
+    fun consumeRotationRequest(): Boolean {
+        val v = scheduleRotation
+        if (v) {
+            scheduleRotation = false
+            lastRotationMs = System.currentTimeMillis()
+        }
+        return v
+    }
+
+    fun recordProxyIssue(reason: String) {
+        lastProxyIssue = reason
+        Log.w("IdentityService", "Intelligence: proxy issue noted: $reason")
+    }
+
+    fun lastProxyIssueSnapshot(): String = lastProxyIssue
+
+    /** فحص اتساق UA مع الدولة — ذكاء توجيهي للمنسق */
+    fun isUaGeoConsistent(userAgent: String, countryCode: String): Boolean {
+        val cc = countryCode.trim().uppercase(Locale.US)
+        val ua = userAgent
+        return when (cc) {
+            "SA", "AE", "EG", "QA", "KW" -> ua.contains("Android", ignoreCase = true) || ua.contains("Mobile", ignoreCase = true)
+            "US", "CA", "GB" -> ua.contains("Windows", ignoreCase = true) || ua.contains("Macintosh", ignoreCase = true) || ua.contains("Chrome", ignoreCase = true)
+            "JP", "KR", "CN" -> ua.contains("Android", ignoreCase = true) || ua.contains("Mobile", ignoreCase = true)
+            else -> ua.contains("Chrome", ignoreCase = true) || ua.contains("Safari", ignoreCase = true) || ua.contains("Firefox", ignoreCase = true)
+        }
+    }
+
     fun resolveUserAgent(ua: String?, isMobileDefault: Boolean = true): String {
         val clean = ua?.trim().orEmpty()
             .replace("; wv)", ")")

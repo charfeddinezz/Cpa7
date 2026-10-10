@@ -77,6 +77,112 @@ object LocalSocks5HttpBridge {
     private val consecutiveUpstreamFailures = AtomicInteger(0)
     private val threadPool = Executors.newCachedThreadPool()
 
+    // ── Intelligence API: ذكاء الجسر — يتعلم ويوزع ──
+    @Volatile
+    var lastRotationMs: Long = 0L
+        private set
+
+    private val protocolSuccess = ConcurrentHashMap<String, AtomicInteger>()
+    private val protocolAttempts = ConcurrentHashMap<String, AtomicInteger>()
+    private val targetCategoryStats = ConcurrentHashMap<String, AtomicInteger>()
+
+    data class BridgeHealthSnapshot(
+        val isConfigured: Boolean,
+        val localPort: Int,
+        val remoteType: String,
+        val consecutiveFailures: Int,
+        val cachedProtocols: Int,
+        val lastRotationMs: Long
+    )
+
+    fun currentProtocol(): String = remoteType.ifBlank { "socks5" }
+
+    fun isConfigured(): Boolean = remoteHost.isNotBlank() && remotePort in 1..65535
+
+    fun healthSnapshot(): BridgeHealthSnapshot = BridgeHealthSnapshot(
+        isConfigured = isConfigured(),
+        localPort = localPort,
+        remoteType = currentProtocol(),
+        consecutiveFailures = consecutiveUpstreamFailures.get(),
+        cachedProtocols = detectedProtocolCache.size,
+        lastRotationMs = lastRotationMs
+    )
+
+    fun consumeFailureCount(): Int = consecutiveUpstreamFailures.getAndSet(0)
+
+    fun peekFailureCount(): Int = consecutiveUpstreamFailures.get()
+
+    /** تصفير ذكي للكاش عند الدوران — يوزع ذكاء البروتوكول من جديد */
+    fun resetIntelligenceCache() {
+        detectedProtocolCache.clear()
+        consecutiveUpstreamFailures.set(0)
+        lastRotationMs = System.currentTimeMillis()
+        Log.i(TAG, "Intelligence: protocol cache cleared, failures reset (rotation)")
+    }
+
+    /** يسمى من المنسق لتدوير البروكسي عند الخطر — يرجع true إذا كان مهيأ */
+    fun rotateIfConfigured(): Boolean {
+        if (!isConfigured()) return false
+        resetIntelligenceCache()
+        return true
+    }
+
+    fun recordTunnelResult(protocol: String, success: Boolean, targetHost: String) {
+        protocolAttempts.computeIfAbsent(protocol) { AtomicInteger(0) }.incrementAndGet()
+        if (success) protocolSuccess.computeIfAbsent(protocol) { AtomicInteger(0) }.incrementAndGet()
+        val cat = categorizeTarget(targetHost)
+        targetCategoryStats.computeIfAbsent("$cat:$protocol") { AtomicInteger(0) }.incrementAndGet()
+    }
+
+    fun protocolSuccessRate(protocol: String): Double {
+        val att = protocolAttempts[protocol]?.get() ?: 0
+        if (att == 0) return 0.5
+        val ok = protocolSuccess[protocol]?.get() ?: 0
+        return ok.toDouble() / att.toDouble()
+    }
+
+    /** لقطة قابلة للحفظ: نجاح/محاولات كل بروتوكول — للذاكرة المستمرة عبر الجلسات */
+    fun protocolRatesSnapshot(): Map<String, Pair<Int, Int>> {
+        val out = mutableMapOf<String, Pair<Int, Int>>()
+        for ((proto, att) in protocolAttempts) {
+            out[proto] = Pair(protocolSuccess[proto]?.get() ?: 0, att.get())
+        }
+        return out
+    }
+
+    fun restoreProtocolRates(snapshot: Map<String, Pair<Int, Int>>) {
+        for ((proto, pair) in snapshot) {
+            protocolSuccess.computeIfAbsent(proto) { AtomicInteger(0) }.set(pair.first)
+            protocolAttempts.computeIfAbsent(proto) { AtomicInteger(0) }.set(pair.second)
+        }
+    }
+
+    /** اختيار تكيفي للبروتوكول حسب فئة الهدف + ما تعلمه الجسر */
+    fun bestProtocolForTarget(targetHost: String, fallback: String): String {
+        val cat = categorizeTarget(targetHost)
+        val candidates = listOf("socks5", "http", "socks4")
+        var best = fallback.ifBlank { "socks5" }
+        var bestScore = -1.0
+        for (p in candidates) {
+            val rate = protocolSuccessRate(p)
+            val catBonus = (targetCategoryStats["$cat:$p"]?.get() ?: 0) * 0.01
+            val score = rate + catBonus
+            if (score > bestScore) { bestScore = score; best = p }
+        }
+        return best
+    }
+
+    fun categorizeTarget(host: String): String {
+        val h = host.lowercase()
+        return when {
+            h.contains("amazon") || h.contains("amzn") || h.contains("walmart") || h.contains("nike") -> "e-commerce"
+            h.contains("facebook") || h.contains("instagram") || h.contains("tiktok") || h.contains("twitter") -> "social"
+            h.contains("google") || h.contains("bing") || h.contains("api") -> "api"
+            h.contains("cloudflare") || h.contains("captcha") || h.contains("challenge") -> "challenge"
+            else -> "general"
+        }
+    }
+
     @Synchronized
     fun start(
         host: String,
@@ -317,7 +423,9 @@ object LocalSocks5HttpBridge {
                 else -> "socks5"
             }
 
-            val protocolOrder = listOf(preferred, "socks5", "http", "socks4").distinct()
+            // ذكاء توزيعي: رتب البروتوكولات حسب ما تعلمه الجسر لكل فئة هدف
+            val learned = bestProtocolForTarget(targetHost, preferred)
+            val protocolOrder = listOf(preferred, learned, "socks5", "http", "socks4").distinct()
 
             for (retryRound in 0..1) {
                 var tcpReachable = true
@@ -332,8 +440,10 @@ object LocalSocks5HttpBridge {
                     if (attempt.socket != null) {
                         consecutiveUpstreamFailures.set(0)
                         detectedProtocolCache[cacheKey] = proto
+                        recordTunnelResult(proto, true, targetHost)
                         return attempt.socket
                     }
+                    recordTunnelResult(proto, false, targetHost)
                     if (!attempt.tcpReachable) {
                         tcpReachable = false
                     }

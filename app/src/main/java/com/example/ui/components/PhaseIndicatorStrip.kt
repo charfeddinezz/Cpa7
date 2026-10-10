@@ -156,6 +156,33 @@ fun PhaseIndicatorStrip(
                 )
             }
 
+            // Cross-layer intelligence pattern badge (يكتبها المنسق كل 5 ثوانٍ)
+            if (automationState.isRunning && automationState.intelPattern.isNotBlank()) {
+                Spacer(modifier = Modifier.width(6.dp))
+                val (intelBg, intelBorder, intelText) = when (automationState.intelRiskLevel) {
+                    "critical" -> Triple(Color(0xFFD32F2F).copy(alpha = 0.20f), Color(0xFFD32F2F), "⚠️ حرج")
+                    "high" -> Triple(Color(0xFFE65100).copy(alpha = 0.18f), Color(0xFFE65100), "⚠️ مرتفع")
+                    "medium" -> Triple(Color(0xFFF9A825).copy(alpha = 0.16f), Color(0xFFF9A825), "⚡ متوسط")
+                    else -> Triple(CpaPrimary.copy(alpha = 0.12f), CpaPrimary, "✅ مستقر")
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(intelBg)
+                        .border(0.5.dp, intelBorder.copy(alpha = 0.7f), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 6.dp, vertical = 3.dp)
+                ) {
+                    Text(
+                        text = "$intelText · ${automationState.intelPattern}",
+                        color = intelBorder,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
             if (automationState.isWaitingBetweenStages && automationState.stageWaitCountdownSec > 0) {
                 Spacer(modifier = Modifier.width(6.dp))
                 Box(

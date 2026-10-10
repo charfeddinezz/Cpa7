@@ -15,6 +15,47 @@ import kotlin.random.Random
  */
 object SmartAutomationBrain {
 
+    // ── Intelligence API: ذكاء العقل — يستقبل من الجسر والهوية ويوجه ──
+    @Volatile
+    var escapeRequested: Boolean = false
+        private set
+
+    @Volatile
+    var humanizationBoost: Int = 0
+
+    @Volatile
+    private var lastProxyIssueReason: String = ""
+
+    @Volatile
+    private var lastProxyIssueProtocol: String = ""
+
+    fun recordProxyIssue(reason: String, protocol: String) {
+        lastProxyIssueReason = reason
+        lastProxyIssueProtocol = protocol
+    }
+
+    fun lastProxyIssue(): Pair<String, String> = lastProxyIssueReason to lastProxyIssueProtocol
+
+    fun triggerEscapeStrategy() {
+        escapeRequested = true
+    }
+
+    fun consumeEscapeRequest(): Boolean {
+        val v = escapeRequested
+        escapeRequested = false
+        return v
+    }
+
+    fun peekEscapeRequest(): Boolean = escapeRequested
+
+    /** تأخير مضخم بتعزيز الأنسنة من المنسق (+0.8 ثانية لكل مستوى) */
+    fun boostedDelay(baseMs: Long): Long =
+        baseMs + humanizationBoost.coerceIn(0, 5) * 800L
+
+    fun increaseHumanizationFactor() {
+        humanizationBoost = (humanizationBoost + 1).coerceAtMost(5)
+    }
+
     // ── أنواع القرارات ──────────────────────────────────────────
     enum class NextAction(val code: String) {
         COMPLETE_CONVERSION("complete"),
@@ -156,7 +197,7 @@ object SmartAutomationBrain {
                 reasonAr = "الصفحة تظهر رسالة حظر أو رفض (${extras.matchedBlockKeyword}). القرار: انتظار قصير ثم إعادة تحميل بهوية/مسار جديد.",
                 reasonEn = "Block wall detected. Rotate identity/proxy instead of hammering.",
                 confidence = 92,
-                delayMsBeforeNextCycle = 3500,
+                delayMsBeforeNextCycle = boostedDelay(3500),
                 prioritySteps = listOf("إيقاف التعبئة فوراً", "تسجيل سبب الحظر", "تدوير البروكسي", "إعادة المحاولة بهوية جديدة"),
                 needsReload = true,
                 needsProxySwitch = true,
@@ -176,7 +217,7 @@ object SmartAutomationBrain {
                 reasonAr = "رُصد تحقق بشري (${extras.matchedCaptchaKeyword}). النقر العشوائي يفشل التحدي. القرار: تمرير هادئ وانتظار الحل ثم الاستئناف.",
                 reasonEn = "Captcha challenge present. Wait patiently, don't interfere.",
                 confidence = 90,
-                delayMsBeforeNextCycle = 6500,
+                delayMsBeforeNextCycle = boostedDelay(6500),
                 prioritySteps = listOf("عدم لمس مربع الكابتشا", "تمرير خفيف طبيعي", "انتظار الحل التلقائي/اليدوي", "إعادة الفحص بعد الانتظار"),
                 executionMode = "normal",
                 shouldExtendTaskTime = true,
@@ -202,20 +243,49 @@ object SmartAutomationBrain {
             )
         }
 
+        // 3.5) هروب موجه من المنسق — رؤية متقاطعة (بروكسي/هوية) تأمر بتغيير المسار الآن
+        if (escapeRequested) {
+            consumeEscapeRequest()
+            val proxyNote = lastProxyIssueReason.takeIf { it.isNotBlank() }
+                ?.let { " (مشكلة بروكسي مسجلة: $it)" } ?: ""
+            return SmartDecision(
+                action = NextAction.SWITCH_STRATEGY,
+                titleAr = "🧠🚨 هروب موجه من الذكاء المتقاطع$proxyNote",
+                titleEn = "Coordinator-directed escape",
+                reasonAr = "المنسق رصد نمط خطر عبر الطبقات (بروكسي/بصمة/سلوك) وأمر بالهروب الفوري بدل الاستمرار العشوائي.$proxyNote",
+                reasonEn = "Cross-layer insight ordered an immediate escape.",
+                confidence = 88,
+                delayMsBeforeNextCycle = boostedDelay(2600),
+                prioritySteps = listOf("تدوير البروكسي", "إعادة تحميل بمسار جديد", "إعادة تقييم الصفحة بعد الاستقرار"),
+                needsReload = true,
+                needsProxySwitch = true,
+                isStuck = true,
+                executionMode = "alt_option_3",
+                shouldExtendTaskTime = stepsSoFar > 0,
+                funnelStageIndex = report.funnelStageIndex,
+                stepsAdvanced = stepsSoFar,
+                detectedQuestion = currentQ
+            )
+        }
+
         // 4) عالق — غيّر الإستراتيجية ونفّذ كود التعافي متعدد المراحل فوراً
         if (isStuck) {
             val alternative = pickEscapeStrategy(report, memory, effectiveNoProgress)
             val recoveryJs = buildStuckRecoveryScript(effectiveNoProgress, report.detectedCategory)
+            val proxyKnownBad = lastProxyIssueReason.isNotBlank()
             return SmartDecision(
                 action = NextAction.SWITCH_STRATEGY,
                 titleAr = "🔄 ذكاء التعافي التلقائي (الطور $effectiveNoProgress) — $alternative",
                 titleEn = "Stuck recovery level $effectiveNoProgress — switch strategy",
-                reasonAr = "نفس البصمة الهيكلية (${report.detectedCategoryAr}) تكررت بدون انتقال. العقل غيّر وضع التنفيذ إلى ($executionMode): $alternative.",
+                reasonAr = "نفس البصمة الهيكلية (${report.detectedCategoryAr}) تكررت بدون انتقال. العقل غيّر وضع التنفيذ إلى ($executionMode): $alternative." +
+                    if (proxyKnownBad) " مشكلة البروكسي المسجلة ($lastProxyIssueReason) ترجح تبديل المسار أيضاً." else "",
                 reasonEn = "Loop detected. Executing recovery mode $executionMode: $alternative",
                 confidence = 86,
-                delayMsBeforeNextCycle = 2400,
-                prioritySteps = listOf("تغيير وضع التنفيذ إلى $executionMode", alternative, "إطلاق أحداث React/Pointer الكاملة", "تفعيل زر الانتقال التالي"),
+                delayMsBeforeNextCycle = boostedDelay(2400),
+                prioritySteps = listOf("تغيير وضع التنفيذ إلى $executionMode", alternative, "إطلاق أحداث React/Pointer الكاملة", "تفعيل زر الانتقال التالي") +
+                    if (proxyKnownBad) listOf("تبديل البروكسي (مشكلة مسجلة)") else emptyList(),
                 needsReload = memory.reloadAttemptsForUrl == 0 && effectiveNoProgress >= 5,
+                needsProxySwitch = proxyKnownBad,
                 isStuck = true,
                 executionMode = executionMode,
                 recoveryCommandJs = recoveryJs,
@@ -421,7 +491,7 @@ object SmartAutomationBrain {
         val complexity = report.fieldsCount + report.buttonsCount + report.radioGroupsCount * 2 + report.selectCount * 2
         val extra = min(complexity * 80L, 1800L)
         val jitter = Random.nextLong(250, 850)
-        return base + extra + jitter
+        return boostedDelay(base + extra + jitter)
     }
 
     /**

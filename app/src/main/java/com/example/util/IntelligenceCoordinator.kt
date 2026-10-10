@@ -1,26 +1,19 @@
 package com.example.util
 
+import android.util.Log
 import com.example.data.model.AutomationState
-import com.example.data.model.TaskEntity
+import com.example.data.model.ExtractedInfo
+import com.example.data.model.GeneratedIdentity
 import com.example.service.IdentityService
 import com.example.service.SmartAutomationBrain
-import com.example.util.LocalSocks5HttpBridge
-import com.example.util.WebProxyManager
 import kotlin.concurrent.thread
+import kotlin.random.Random
 
 /**
- * Central Intelligence Coordinator that connects all anti-detection layers.
- * Provides cross-layer analysis, recursive intelligence, and adaptive feedback.
- * 
- * Architecture: Each component reports its state/analysis to the coordinator,
- * which synthesizes insights and issues adaptive commands back to all layers.
- * 
- * Key Features:
- * - Recursive fingerprint analysis across proxy + WebView + automation
- * - Behavioral correlation between proxy health and automation success
- * - Adaptive strategy adjustment based on multi-layer patterns
- * - Real-time threat detection across all layers
- * - Session consistency validation across identity/proxy/automation
+ * Central Intelligence Coordinator — ذكاء يربط كل ذكاء.
+ *
+ * الجسر (بروكسي) ⇄ الهوية (بصمة) ⇄ العقل (سلوك) ⇄ المهام
+ * كل طبقة تحلل نفسها، وترسل خلاصتها للمنسق، والمنسق يوزع أوامر تكيفية للكل.
  */
 
 data class ProxyHealthReport(
@@ -30,7 +23,9 @@ data class ProxyHealthReport(
     val protocol: String,
     val failureReason: String? = null,
     val consecutiveFailures: Int = 0,
-    val lastRotationMs: Long = 0L
+    val lastRotationMs: Long = 0L,
+    // ذكاء مدير البروكسي: معدل نجاح تطبيق نفس البروكسي على WebView
+    val upstreamApplyRate: Double = 0.5
 )
 
 data class IdentityFingerprintReport(
@@ -48,257 +43,359 @@ data class AutomationBehaviorReport(
     val stuckCount: Int,
     val adaptiveDelay: Long,
     val escapeActionsTaken: Int,
-    val humanizationScore: Int, // 0-100 how human-like
+    val humanizationScore: Int,
     val lastOptimizationMs: Long = 0L
 )
 
 data class CrossLayerInsight(
     val timestamp: Long = System.currentTimeMillis(),
-    val proxyImpactOnAutomation: Double, // -1.0 to 1.0 (positive = helping, negative = harming)
-    val identityConsistencyScore: Double, // 0-1 how well identity matches proxy/geo
-    val behavioralPattern: String, // "human", "bot", "mixed", "adaptive"
-    val recommendedActions: List<String>,
-    val riskLevel: String, // "low", "medium", "high", "critical"
-    val predictedOutcome: String // "continue", "pause", "rotate", "restart"
+    val proxyImpactOnAutomation: Double = 0.0,
+    val identityConsistencyScore: Double = 0.5,
+    val behavioralPattern: String = "mixed_pattern",
+    val recommendedActions: List<String> = listOf("monitor_patterns"),
+    val riskLevel: String = "low",
+    val predictedOutcome: String = "continue_optimized"
 )
 
 class IntelligenceCoordinator(
-    private val proxyBridge: LocalSocks5HttpBridge,
+    val proxyBridge: LocalSocks5HttpBridge,
     private val proxyManager: WebProxyManager,
     private val identityService: IdentityService,
     private val automationBrain: SmartAutomationBrain,
-    private val taskDao: Any, // TaskDao reference
-    private val settings: Any // Settings reference
+    private val taskDao: Any,
+    private val host: Any
 ) {
-
-    // Cross-layer state tracking
     @Volatile
-    private var lastCrossLayerInsight: CrossLayerInsight = CrossLayerInsight()
+    var lastCrossLayerInsight: CrossLayerInsight = CrossLayerInsight()
+        private set
 
     @Volatile
-    private var behavioralBaselineEstablished = false
-    @Volatile
-    private var sessionAnomalyCount = 0
+    var sessionAnomalyCount: Int = 0
+        private set
 
-    // Recursive analysis intervals
-    private val analysisThread = thread {
-        while (true) {
+    /** يُستدعى مع كل رؤية جديدة — يربط المنسق بالواجهة والحفظ */
+    @Volatile
+    var onInsight: ((CrossLayerInsight) -> Unit)? = null
+
+    /**
+     * مُصدِر السجل داخل التطبيق (يضبطه AppViewModel على addLog).
+     * كل ما يفعله المنسق وما سيفعله يظهر في شاشة Logs — مع نسخة في logcat.
+     */
+    @Volatile
+    var logEmitter: ((level: String, message: String) -> Unit)? = null
+
+    private fun ilog(level: String, message: String) {
+        val prefixed = "🧠 [استخبارات] $message"
+        when (level) {
+            "warning" -> Log.w("IntelligenceCoordinator", message)
+            "error" -> Log.e("IntelligenceCoordinator", message)
+            "success" -> Log.i("IntelligenceCoordinator", "SUCCESS: $message")
+            else -> Log.i("IntelligenceCoordinator", message)
+        }
+        try { logEmitter?.invoke(level, prefixed) } catch (_: Exception) {}
+    }
+
+    // ذاكرة منع الإزعاج: نسجل التفاصيل الكاملة فقط عند التغير أو الخطر
+    @Volatile
+    private var lastLoggedRisk: String = ""
+    @Volatile
+    private var lastLoggedActions: List<String> = emptyList()
+    @Volatile
+    private var cycleCount: Int = 0
+
+    // مزودات الحالة الحية من AppViewModel (تُربط بعد الإنشاء)
+    private var identityProvider: (() -> GeneratedIdentity)? = null
+    private var automationStateProvider: (() -> AutomationState)? = null
+    private var geoProvider: (() -> ExtractedInfo)? = null
+    private var userAgentProvider: (() -> String)? = null
+
+    @Volatile
+    private var analysisRunning = true
+
+    private val analysisThread = thread(name = "Intel-Coordinator", isDaemon = true) {
+        while (analysisRunning) {
             try {
-                Thread.sleep(3000) // Analyze every 3 seconds
-                performRecursiveAnalysis()
+                Thread.sleep(5000)
+                if (analysisRunning) performRecursiveAnalysis()
+            } catch (_: InterruptedException) {
+                break
             } catch (e: Exception) {
-                Log.e("IntelligenceCoordinator", "Analysis thread error: ${e.message}")
+                ilog("error", "خطأ في خيط التحليل: ${e.message}")
             }
         }
     }
 
-    /** 
-     * Performs recursive cross-layer analysis:
-     * - Analyzes proxy health and its impact on automation
-     * - Correlates identity consistency with proxy exit IP
-     * - Maps automation behavior patterns to proxy/fingerprint changes
-     * - Generates adaptive recommendations for all layers
-     */
-    private fun performRecursiveAnalysis() {
-        val proxyReport = analyzeProxyRecursive()
-        val identityReport = analyzeIdentityRecursive()
-        val automationReport = analyzeAutomationRecursive()
-
-        val insight = synthesizeCrossLayerInsight(
-            proxyReport,
-            identityReport,
-            automationReport
-        )
-
-        // Issue adaptive commands to all layers
-        issueAdaptiveCommands(insight)
-
-        lastCrossLayerInsight = insight
-        Log.i("IntelligenceCoordinator", "Cross-layer insight: ${insight.riskLevel} risk, ${insight.behavioralPattern} pattern")
+    fun attach(
+        identity: () -> GeneratedIdentity,
+        automationState: () -> AutomationState,
+        geo: () -> ExtractedInfo,
+        userAgent: () -> String
+    ) {
+        identityProvider = identity
+        automationStateProvider = automationState
+        geoProvider = geo
+        userAgentProvider = userAgent
     }
 
-    /** 
-     * Recursive proxy analysis: examines not just health but patterns,
-     * success correlations, and adaptive rotation decisions.
-     */
-    private fun analyzeProxyRecursive(): ProxyHealthReport {
-        val baseHealth = proxyBridge.connectedProxies?.isNotEmpty() == true
-        val consecutiveFailures = proxyBridge.consecutiveUpstreamFailures.getAndReset()
+    fun stop() {
+        analysisRunning = false
+        try { analysisThread.interrupt() } catch (_: Exception) {}
+    }
 
-        // Recursive pattern analysis: are failures periodic? correlated with automation phases?
-        val failurePattern = if (consecutiveFailures > 0) {
-            // Analyze timing of failures relative to automation cycles
-            val isPeriodic = consecutiveFailures % 7 == 0 // Weekly pattern detection hint
-            val isDuringHeavyLoad = consecutiveFailures > 3 && automationBrain != null
+    // ── 1) ذكاء الجسر × مدير البروكسي: صحة النفق + نجاح التطبيق + تأثير على الأتمتة ──
+    fun analyzeProxyRecursive(): ProxyHealthReport {
+        val snap = proxyBridge.healthSnapshot()
+        val fails = proxyBridge.peekFailureCount()
+        // ربط ذكاء المدير: معدل نجاح تطبيق نفس البروكسي على WebView
+        val (upHost, upPort) = proxyManager.currentUpstream()
+        val applyRate = if (upHost.isBlank() || upPort <= 0) 0.5
+        else proxyManager.upstreamSuccessRate(upHost, upPort)
+        // تغذية عكسية للجسر: بروتوكوله المفضل حسب فئة الهدف
+        val learnedProto = snap.remoteType
 
-            when {
-                consecutiveFailures >= 5 -> ProxyHealthReport(
-                    isHealthy = false,
-                    exitIp = "unknown",
-                    pingMs = 0,
-                    protocol = proxyBridge.remoteType,
-                    failureReason = "Critical upstream failure ($consecutiveFailures consecutive)",
-                    consecutiveFailures = consecutiveFailures,
-                    lastRotationMs = System.currentTimeMillis()
-                )
-                consecutiveFailures >= 3 -> ProxyHealthReport(
-                    isHealthy = true,
-                    exitIp = "available",
-                    pingMs = detectPingTrend(),
-                    protocol = detectBestProtocol(),
-                    failureReason = "Degraded performance - considering rotation",
-                    consecutiveFailures = consecutiveFailures,
-                    lastRotationMs = System.currentTimeMillis()
-                )
-                else -> ProxyHealthReport(
-                    isHealthy = true,
-                    exitIp = "stable",
-                    pingMs = detectPingTrend(),
-                    protocol = detectBestProtocol(),
-                    failureReason = null,
-                    consecutiveFailures = consecutiveFailures,
-                    lastRotationMs = System.currentTimeMillis()
-                )
-            }
+        val healthy = if (!snap.isConfigured) {
+            true // الوضع المباشر ليس فشلاً — فقط بلا حماية بروكسي
         } else {
-            ProxyHealthReport(
-                isHealthy = true,
-                exitIp = "stable",
-                pingMs = detectPingTrend(),
-                protocol = detectBestProtocol(),
-                failureReason = null,
-                consecutiveFailures = 0,
-                lastRotationMs = System.currentTimeMillis()
-            )
+            fails < 5 && applyRate > 0.2
         }
 
-        // Recursive: if proxy is failing, analyze if it's affecting automation success rates
-        if (!proxyReport.isHealthy && automationBrain != null) {
-            // Feed proxy health back into brain's decision making
-            automationBrain.recordProxyIssue(
-                proxyReport.failureReason ?: "unknown",
-                proxyReport.protocol
-            )
+        val reason = when {
+            !snap.isConfigured -> "No upstream proxy configured (direct mode)"
+            fails >= 5 -> "Critical upstream failure ($fails consecutive)"
+            applyRate <= 0.2 -> "WebView apply failing (rate ${(applyRate * 100).toInt()}%)"
+            fails >= 3 -> "Degraded performance - considering rotation"
+            else -> null
         }
 
-        return proxyReport
+        // ذكاء عكسي: غذّ العقل والهوية بمشكلة البروكسي ليوجهوا قراراتهم
+        if (!healthy && reason != null && snap.isConfigured) {
+            automationBrain.recordProxyIssue(reason, learnedProto)
+            identityService.recordProxyIssue(reason)
+        }
+
+        return ProxyHealthReport(
+            isHealthy = healthy,
+            exitIp = if (snap.isConfigured) "configured" else "direct",
+            pingMs = detectPingTrend(),
+            protocol = learnedProto,
+            failureReason = reason,
+            consecutiveFailures = fails,
+            lastRotationMs = snap.lastRotationMs,
+            upstreamApplyRate = applyRate
+        )
     }
 
-    /** 
-     * Recursive identity analysis: validates fingerprint consistency 
-     * across user-agent, canvas, webgl, and geo-IP alignment.
-     */
-    private fun analyzeIdentityRecursive(): IdentityFingerprintReport {
-        val currentIdentity = identityService.identity.value
+    // ── 2) ذكاء الهوية: اتساق UA + لغة + بصمة مع الجغرافيا ──
+    fun analyzeIdentityRecursive(): IdentityFingerprintReport {
+        val geo = geoProvider?.invoke() ?: ExtractedInfo()
+        val ua = userAgentProvider?.invoke().orEmpty()
+        val auto = automationStateProvider?.invoke()
 
-        // Analyze user-agent consistency with geo-IP
-        val uaGeoMatch = when {
-            currentIdentity.countryCode == "SA" && currentIdentity.userAgent.contains("Arabic") -> true
-            currentIdentity.countryCode == "US" && currentIdentity.userAgent.contains("Windows") -> true
-            currentIdentity.countryCode == "JP" && currentIdentity.userAgent.contains("Android") -> true
-            else -> currentIdentity.userAgent.contains(currentIdentity.countryCode)
+        val uaGeoMatch = if (ua.isBlank()) {
+            true // لا UA بعد = لا حكم
+        } else {
+            identityService.isUaGeoConsistent(ua, geo.countryCode.ifBlank { "US" })
         }
 
-        // Recursive canvas/webgl fingerprint analysis based on proxy type
-        val canvasOk = Random.nextBoolean() // In production: actual canvas analysis
-        val webglOk = Random.nextBoolean() // In production: actual webgl analysis
+        val expectedLangPrefix = when (geo.countryCode.trim().uppercase()) {
+            "SA", "AE", "EG", "QA", "KW", "JO", "IQ", "SY", "LB", "PS", "YE", "MA", "DZ", "TN" -> "ar"
+            "FR" -> "fr"
+            "DE" -> "de"
+            "ES" -> "es"
+            "JP" -> "ja"
+            else -> "en"
+        }
+        val languageIpMatch = geo.language.isBlank() ||
+            geo.language.lowercase().startsWith(expectedLangPrefix)
 
-        // Geo-IP and language consistency
-        val languageIpMatch = currentIdentity.language?.takeIf { it.startsWith("ar") } ==
-            (currentIdentity.countryCode == "SA")
+        // اتساق البصمة: seed مستقر + لم يدور منذ زمن قصير جداً
+        val seed = auto?.fingerprintSeed ?: 0L
+        val canvasOk = seed != 0L
+        val webglOk = seed != 0L
+        val rotationGap = System.currentTimeMillis() - identityService.lastRotationMs
+        val tooFrequent = identityService.lastRotationMs != 0L && rotationGap < 60_000L
 
-        // Recursive: if identity mismatch detected, trigger rotation planning
-        if (!uaGeoMatch || !languageIpMatch) {
-            // Schedule identity rotation after current task completes
-            scheduleIdentityRotation()
+        if ((!uaGeoMatch || !languageIpMatch) && !tooFrequent) {
+            identityService.scheduleIdentityRotation()
         }
 
         return IdentityFingerprintReport(
-            userAgent = currentIdentity.userAgent,
+            userAgent = ua.ifBlank { "(not set yet)" },
             canvasConsistency = canvasOk,
             webglConsistency = webglOk,
             geoConsistency = uaGeoMatch && languageIpMatch,
             languageIpMatch = languageIpMatch,
-            lastRotationMs = identityService.fingerprintState.value.lastRotation
+            lastRotationMs = identityService.lastRotationMs
         )
     }
 
-    /** 
-     * Recursive automation behavior analysis: doesn't just track success/failure
-     * but analyzes patterns, adapts strategies, and predicts optimal paths.
-     */
-    private fun analyzeAutomationRecursive(): AutomationBehaviorReport {
-        val currentState = automationBrain?.automationState.value ?: AutomationState()
+    // ── 3) ذكاء السلوك: مرحلة + تعلق + أنسنة + تأخير تكيفي ──
+    fun analyzeAutomationRecursive(): AutomationBehaviorReport {
+        val state = automationStateProvider?.invoke() ?: AutomationState()
 
-        // Analyze stuck patterns and adapt escape strategies
-        val stuckAnalysis = when {
-            currentState.stuckCount >= 3 -> "deep_stuck_pattern"
-            currentState.stuckCount >= 1 -> "moderate_stuck"
-            else -> "normal_progression"
-        }
+        val adaptiveDelay = when (state.funnelStageIndex) {
+            1 -> 8000L + Random.nextLong(5000L)
+            2 -> 6000L + Random.nextLong(3000L)
+            3 -> 5000L + Random.nextLong(2000L)
+            4 -> 7000L + Random.nextLong(4000L)
+            5 -> 10000L + Random.nextLong(6000L)
+            else -> 5000L
+        } + automationBrain.humanizationBoost.toLong() * 1000L
 
-        // Calculate humanization score based on delays, CTA patterns, and task progression
-        val humanizationScore = calculateHumanizationScore(currentState)
-
-        // Determine optimal adaptive delay based on stage and fatigue
-        val adaptiveDelay = when (currentState.funnelStageIndex) {
-            1 -> 8000 + Random.nextInt(5000) // Initial exploration
-            2 -> 6000 + Random.nextInt(3000) // CTA engagement
-            3 -> 5000 + Random.nextInt(2000) // Form interaction
-            4 -> 7000 + Random.nextInt(4000) // Verification
-            5 -> 10000 + Random.nextInt(6000) // Final submission - longer for realism
-            else -> 5000
-        }
-
-        // Count escape actions taken this session
-        val escapeActions = currentState.activeDirectiveTitle?.let {
-            when {
-                it.contains("captcha") -> 1
-                it.contains("escape") -> 1
-                it.contains("retry") -> 1
-                else -> 0
-            }
-        } ?: 0
+        val title = state.activeDirectiveTitle
+        val escapeActions = when {
+            title.contains("captcha", ignoreCase = true) -> 1
+            title.contains("escape", ignoreCase = true) -> 1
+            title.contains("retry", ignoreCase = true) -> 1
+            else -> 0
+        } + if (automationBrain.escapeRequested) 1 else 0
 
         return AutomationBehaviorReport(
-            stage = currentState.funnelStageIndex,
-            successRate = calculateSuccessRate(currentState),
-            stuckCount = currentState.stuckCount,
+            stage = state.funnelStageIndex,
+            successRate = calculateSuccessRate(state),
+            stuckCount = state.stuckCount,
             adaptiveDelay = adaptiveDelay,
             escapeActionsTaken = escapeActions,
-            humanizationScore = humanizationScore,
+            humanizationScore = calculateHumanizationScore(state),
             lastOptimizationMs = System.currentTimeMillis()
         )
     }
 
-    /** 
-     * Synthesizes cross-layer insight from all recursive analyses.
-     * This is where the "intelligence within intelligence" happens -
-     * connecting dots across layers that individual components wouldn't see.
-     */
+    /** فحص ما قبل التشغيل: يجمع التقارير الثلاثة ويخرج رؤية واحدة ويوزعها + سجل كامل */
+    fun runPreflight(): CrossLayerInsight {
+        ilog("info", "🔍 بدء الفحص الشامل قبل التشغيل: فحص البروكسي + الهوية + السلوك...")
+        val proxy = analyzeProxyRecursive()
+        ilog(
+            "info",
+            "🌐 البروكسي: صحي=${if (proxy.isHealthy) "نعم ✅" else "لا ❌"} | بروتوكول=${proxy.protocol} | فشل متتالٍ=${proxy.consecutiveFailures} | نجاح التطبيق=${(proxy.upstreamApplyRate * 100).toInt()}%${proxy.failureReason?.let { " | ملاحظة: $it" } ?: ""}"
+        )
+        val identity = analyzeIdentityRecursive()
+        ilog(
+            "info",
+            "🪪 الهوية: اتساق جغرافي=${if (identity.geoConsistency) "متسق ✅" else "غير متسق ⚠️"} | لغة/IP=${if (identity.languageIpMatch) "متطابق ✅" else "مختلف ⚠️"} | بصمة=${if (identity.canvasConsistency) "مستقرة ✅" else "غير مضبوطة بعد"} | UA=${identity.userAgent.take(52)}"
+        )
+        val behavior = analyzeAutomationRecursive()
+        ilog(
+            "info",
+            "🧠 السلوك: مرحلة=${behavior.stage}/6 | أنسنة=${behavior.humanizationScore}% | تعلق=${behavior.stuckCount} | نجاح=${(behavior.successRate * 100).toInt()}% | تأخير تكيفي=${behavior.adaptiveDelay}ms"
+        )
+        val insight = synthesizeCrossLayerInsight(proxy, identity, behavior)
+        logDecision(insight, isPreflight = true)
+        emitInsight(insight)
+        return insight
+    }
+
+    private fun performRecursiveAnalysis() {
+        try {
+            cycleCount++
+            val proxy = analyzeProxyRecursive()
+            val identity = analyzeIdentityRecursive()
+            val behavior = analyzeAutomationRecursive()
+            val insight = synthesizeCrossLayerInsight(proxy, identity, behavior)
+            issueAdaptiveCommands(insight)
+            lastCrossLayerInsight = insight
+            if (insight.riskLevel == "critical" || insight.riskLevel == "high") {
+                sessionAnomalyCount++
+            }
+            try { onInsight?.invoke(insight) } catch (_: Exception) {}
+
+            val running = automationStateProvider?.invoke()?.isRunning == true
+            val changed = insight.riskLevel != lastLoggedRisk || insight.recommendedActions != lastLoggedActions
+            val dangerous = insight.riskLevel == "critical" || insight.riskLevel == "high"
+            when {
+                // تفاصيل كاملة عند التغير أو الخطر — ماذا يحدث وماذا سيحدث
+                changed || dangerous -> {
+                    logDecision(insight, isPreflight = false)
+                    lastLoggedRisk = insight.riskLevel
+                    lastLoggedActions = insight.recommendedActions
+                }
+                // نبضة مختصرة أثناء التشغيل كل ~30 ثانية لتأكيد أن الذكاء حي
+                running && cycleCount % 6 == 0 -> {
+                    ilog(
+                        "info",
+                        "💓 نبضة [دورة #$cycleCount]: خطر=${insight.riskLevel} | نمط=${insight.behavioralPattern} | أنسنة=${behavior.humanizationScore}% | بروتوكول=${proxy.protocol} | القرار: ${insight.predictedOutcome}"
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            ilog("error", "فشل التحليل الدوري: ${e.message}")
+        }
+    }
+
+    /** سجل القرار الكامل: ماذا رصدنا + ماذا سنفعل بعده */
+    private fun logDecision(insight: CrossLayerInsight, isPreflight: Boolean) {
+        val prefix = if (isPreflight) "📋 نتيجة الفحص" else "🔁 دورة #$cycleCount"
+        val level = when (insight.riskLevel) {
+            "critical" -> "error"
+            "high" -> "warning"
+            "medium" -> "warning"
+            else -> "success"
+        }
+        ilog(
+            level,
+            "$prefix: خطر=${insight.riskLevel} | نمط=${insight.behavioralPattern} | تأثير البروكسي=${"%.2f".format(insight.proxyImpactOnAutomation)} | اتساق الهوية=${(insight.identityConsistencyScore * 100).toInt()}%"
+        )
+        ilog(
+            "info",
+            "➡️ ما سيفعله النظام الآن (${insight.predictedOutcome}): ${insight.recommendedActions.joinToString(" ← ")}"
+        )
+    }
+
+    /** توزيع الرؤية للواجهة والحفظ — يُستدعى من runPreflight أيضاً */
+    private fun emitInsight(insight: CrossLayerInsight) {
+        lastCrossLayerInsight = insight
+        try { onInsight?.invoke(insight) } catch (_: Exception) {}
+    }
+
+    // ── ذاكرة مستمرة: لقطة/استعادة عبر الجلسات (يحفظها AppViewModel في prefs) ──
+    fun snapshotState(): Map<String, String> {
+        val proto = proxyBridge.protocolRatesSnapshot()
+            .entries.joinToString(";") { "${it.key}:${it.value.first}/${it.value.second}" }
+        return mapOf(
+            "protoRates" to proto,
+            "humanBoost" to automationBrain.humanizationBoost.toString(),
+            "anomalies" to sessionAnomalyCount.toString(),
+            "identityRotation" to identityService.lastRotationMs.toString(),
+            "bridgeRotation" to proxyBridge.healthSnapshot().lastRotationMs.toString()
+        )
+    }
+
+    fun restoreState(map: Map<String, String>) {
+        try {
+            map["protoRates"]?.takeIf { it.isNotBlank() }?.let { raw ->
+                val parsed = raw.split(";").mapNotNull { part ->
+                    val kv = part.split(":")
+                    if (kv.size != 2) return@mapNotNull null
+                    val nums = kv[1].split("/")
+                    if (nums.size != 2) return@mapNotNull null
+                    kv[0] to Pair(nums[0].toIntOrNull() ?: 0, nums[1].toIntOrNull() ?: 0)
+                }.toMap()
+                if (parsed.isNotEmpty()) proxyBridge.restoreProtocolRates(parsed)
+            }
+            map["humanBoost"]?.toIntOrNull()?.let {
+                automationBrain.humanizationBoost = it.coerceIn(0, 5)
+            }
+            map["anomalies"]?.toIntOrNull()?.let { sessionAnomalyCount = it.coerceAtLeast(0) }
+            map["identityRotation"]?.toLongOrNull()?.let { identityService.lastRotationMs = it }
+            ilog("info", "💾 استُعيدت الذاكرة المستمرة: بروتوكولات + تعزيز + فئات من الجلسات السابقة")
+        } catch (e: Exception) {
+            ilog("error", "فشلت الاستعادة: ${e.message}")
+        }
+    }
+
     private fun synthesizeCrossLayerInsight(
         proxyReport: ProxyHealthReport,
         identityReport: IdentityFingerprintReport,
         automationReport: AutomationBehaviorReport
     ): CrossLayerInsight {
-
-        // === CORE INTELLIGENCE: Cross-layer correlation ===
-
-        // 1. Proxy impact on automation
         val proxyImpact = calculateProxyImpactOnAutomation(proxyReport, automationReport)
-
-        // 2. Identity consistency score
         val identityScore = calculateIdentityConsistency(identityReport)
-
-        // 3. Behavioral pattern detection (the "which intelligence is winning" analysis)
         val behavioralPattern = detectBehavioralPattern(
             proxyReport.isHealthy,
             identityReport.geoConsistency,
             automationReport.humanizationScore,
             automationReport.stuckCount
         )
-
-        // 4. Risk level assessment
         val riskLevel = assessRiskLevel(
             proxyReport.isHealthy,
             identityReport.geoConsistency,
@@ -306,56 +403,37 @@ class IntelligenceCoordinator(
             automationReport.escapeActionsTaken
         )
 
-        // 5. Predicted outcome and recommended actions
         val (predictedOutcome, recommendedActions) = when {
-            riskLevel == "critical" -> (
-                "pause_session",
-                listOf(
-                    "rotate_proxy_immediately",
-                    "reset_identity_fingerprints",
-                    "pause_automation",
-                    "analyze_block_reasons"
-                )
+            riskLevel == "critical" -> "pause_session" to listOf(
+                "rotate_proxy_immediately",
+                "reset_identity_fingerprints",
+                "pause_automation",
+                "analyze_block_reasons"
             )
-            riskLevel == "high" -> (
-                "pause_and_rotate",
-                listOf(
-                    "rotate_proxy",
-                    "adjust_automation_delay",
-                    "validate_identity_consistency"
-                )
+            riskLevel == "high" -> "pause_and_rotate" to listOf(
+                "rotate_proxy",
+                "adjust_automation_delay",
+                "validate_identity_consistency"
             )
-            automationReport.stuckCount >= 3 -> (
-                "escape_and_restart",
-                listOf(
-                    "execute_escape_strategy",
-                    "rotate_proxy_if_needed",
-                    "reset_task_state"
-                )
+            automationReport.stuckCount >= 3 -> "escape_and_restart" to listOf(
+                "execute_escape_strategy",
+                "rotate_proxy_if_needed",
+                "reset_task_state"
             )
-            !proxyReport.isHealthy -> (
-                "optimize_proxy",
-                listOf(
-                    "rotate_proxy_strategy",
-                    "test_alternative_proxies",
-                    "maintain_current_automation"
-                )
+            !proxyReport.isHealthy -> "optimize_proxy" to listOf(
+                "rotate_proxy_strategy",
+                "test_alternative_proxies",
+                "maintain_current_automation"
             )
-            identityReport.geoConsistency == false -> (
-                "reconcile_identity",
-                listOf(
-                    "rotate_identity_to_match_proxy",
-                    "adjust_language_ip",
-                    "maintain_automation"
-                )
+            !identityReport.geoConsistency -> "reconcile_identity" to listOf(
+                "rotate_identity_to_match_proxy",
+                "adjust_language_ip",
+                "maintain_automation"
             )
-            else -> (
-                "continue_optimized",
-                listOf(
-                    "monitor_patterns",
-                    "fine_tune_delays",
-                    "maintain_successful_config"
-                )
+            else -> "continue_optimized" to listOf(
+                "monitor_patterns",
+                "fine_tune_delays",
+                "maintain_successful_config"
             )
         }
 
@@ -369,165 +447,87 @@ class IntelligenceCoordinator(
         )
     }
 
-    /** 
-     * Issues adaptive commands to all layers based on synthesized insight.
-     * This closes the feedback loop - the coordinator talks back to each component.
-     */
     private fun issueAdaptiveCommands(insight: CrossLayerInsight) {
-        // 1. Issue to Proxy Bridge
         if (insight.recommendedActions.any { it == "rotate_proxy_immediately" }) {
-            proxyBridge.rotateIfConfigured()
-            Log.w("IntelligenceCoordinator", "Critical: Forced proxy rotation issued")
+            if (proxyBridge.rotateIfConfigured()) {
+                ilog("warning", "🔄 أمر منفذ: دوران فوري للبروكسي (خطر ${insight.riskLevel}) — سيُعاد اكتشاف البروتوكول تلقائياً")
+            } else {
+                ilog("warning", "🔄 تعذر الدوران: لا بروكسي مهيأ — البقاء على الاتصال المباشر")
+            }
+        } else if (insight.recommendedActions.any { it == "rotate_proxy" || it == "rotate_proxy_if_needed" || it == "rotate_proxy_strategy" }) {
+            if (insight.riskLevel != "low") {
+                proxyBridge.resetIntelligenceCache()
+                ilog("info", "🔄 أمر منفذ: تصفير ذاكرة البروتوكولات لإعادة التعلم من الصفر")
+            }
         }
 
-        // 2. Issue to Identity Service
-        if (insight.recommendedActions.any { it == "rotate_identity_to_match_proxy" }) {
-            // Trigger identity rotation after current task
-            identityService.scheduleRotation = true
-            Log.i("IntelligenceCoordinator", "Identity rotation scheduled to match proxy")
+        if (insight.recommendedActions.any { it == "rotate_identity_to_match_proxy" || it == "reset_identity_fingerprints" }) {
+            identityService.scheduleIdentityRotation()
+            ilog("info", "🪪 أمر منفذ: جدولة تدوير الهوية بعد المهمة الحالية لمطابقة البروكسي")
         }
 
-        // 3. Issue to Automation Brain
         if (insight.recommendedActions.any { it == "execute_escape_strategy" }) {
             automationBrain.triggerEscapeStrategy()
-            Log.i("IntelligenceCoordinator", "Escape strategy triggered by cross-layer insight")
+            ilog("warning", "🚨 أمر منفذ: استراتيجية هروب — العقل سيبدل المسار ويعيد التحميل عند أول صفحة")
         }
 
         if (insight.recommendedActions.any { it == "adjust_automation_delay" }) {
-            // Increase humanization delays based on analysis
             automationBrain.increaseHumanizationFactor()
-            Log.i("IntelligenceCoordinator", "Humanization delay increased")
+            ilog("info", "⏳ أمر منفذ: رفع الأنسنة للمستوى ${automationBrain.humanizationBoost} — كل الانتظارات ستطول (+0.8 ث/مستوى)")
         }
-
-        // 4. Log insight for pattern learning
-        Log.d("IntelligenceCoordinator", "Cross-layer insight synthesized: ${insight.behavioralPattern} pattern, $riskLevel risk")
     }
 
-    /** 
-     * Calculates proxy impact on automation success/failure.
-     * Recursive: considers not just if proxy is up/down, but patterns.
-     */
     private fun calculateProxyImpactOnAutomation(
         proxy: ProxyHealthReport,
         automation: AutomationBehaviorReport
     ): Double {
-        // Base impact from proxy health
         var baseImpact = if (proxy.isHealthy) 0.5 else -0.3
-
-        // Recursive adjustment: if automation is human-like and proxy is struggling,
-        // the humanization might be compensating or might be the cause
-        if (automation.humanizationScore > 70 && !proxy.isHealthy) {
-            // Human delays might be timing out slow proxy - negative interaction
-            baseImpact -= 0.15
-        }
-
-        // If proxy is healthy and automation is human-like, positive synergy
-        if (proxy.isHealthy && automation.humanizationScore > 70) {
-            baseImpact += 0.2
-        }
-
-        // Stuck count amplifies proxy issues
+        if (automation.humanizationScore > 70 && !proxy.isHealthy) baseImpact -= 0.15
+        if (proxy.isHealthy && automation.humanizationScore > 70) baseImpact += 0.2
         if (automation.stuckCount >= 3) {
             baseImpact -= 0.25 * automation.stuckCount.coerceAtMost(5).toDouble() / 5.0
         }
-
-        return baseImpact.coerce(-1.0, 1.0)
+        return baseImpact.coerceIn(-1.0, 1.0)
     }
 
-    /** 
-     * Calculates identity consistency score across all dimensions.
-     * Recursive: learns from historical consistency patterns.
-     */
     private fun calculateIdentityConsistency(identity: IdentityFingerprintReport): Double {
         var score = 0.0
-
-        // User agent geo-match
         if (identity.geoConsistency) score += 0.4
-
-        // Language-IP match
         if (identity.languageIpMatch) score += 0.3
-
-        // Canvas/webgl consistency bonus
         if (identity.canvasConsistency && identity.webglConsistency) score += 0.2
-
-        // Penalty for recent rotations (too frequent = suspicious)
+        // ملاحظة: عدم وجود بصمة بعد (أول تشغيل) ليس فشلاً — فقط لا مكافأة
+        if (identity.userAgent == "(not set yet)") score += 0.1
         val rotationInterval = System.currentTimeMillis() - identity.lastRotationMs
-        if (rotationInterval < 60000) { // Rotated less than 1 minute ago
-            score -= 0.2 // Too suspicious
-        } else if (rotationInterval > 86400000) { // Rotated more than 24h ago
-            score -= 0.1 // Stale fingerprint
-        }
-
-        return score.coerce(0.0, 1.0)
+        if (identity.lastRotationMs != 0L && rotationInterval < 60_000) score -= 0.2
+        else if (identity.lastRotationMs != 0L && rotationInterval > 86_400_000) score -= 0.1
+        return score.coerceIn(0.0, 1.0)
     }
 
-    /** 
-     * Detects the prevailing behavioral pattern across all layers.
-     * This is the meta-analysis: which "intelligence" is dominating.
-     */
     private fun detectBehavioralPattern(
         proxyHealthy: Boolean,
         identityConsistent: Boolean,
         humanizationScore: Int,
         stuckCount: Int
     ): String {
-        val proxyFactor = if (proxyHealthy) "stable_proxy" else "struggling_proxy"
-        val identityFactor = if (identityConsistent) "consistent_identity" else "fragmented_identity"
-        val humanFactor = when {
-            humanizationScore >= 80 -> "highly_human"
-            humanizationScore >= 60 -> "moderately_human"
-            else -> "bot-like"
-        }
-        val stickFactor = when {
-            stuckCount >= 3 -> "deeply_stuck"
-            stuckCount >= 1 -> "partially_stuck"
-            else -> "flowing_smoothly"
-        }
-
-        // Determine dominant pattern
-        return if (!proxyHealthy && stuckCount >= 3) {
-            "adaptive_escape_attempt" // System is actively adapting to survive
-        } else if (!proxyHealthy) {
-            "proxy_constrained" // Good identity but bad pipe
-        } else if (stuckCount >= 2) {
-            "escalating_challenges" // Getting blocked despite good proxy
-        } else if (humanizationScore >= 80 && identityConsistent) {
-            "optimal_human_blend" // All layers aligned for human-like operation
-        } else {
-            "mixed_pattern" // Some layers good, some need adjustment
-        }
+        return if (!proxyHealthy && stuckCount >= 3) "adaptive_escape_attempt"
+        else if (!proxyHealthy) "proxy_constrained"
+        else if (stuckCount >= 2) "escalating_challenges"
+        else if (humanizationScore >= 80 && identityConsistent) "optimal_human_blend"
+        else "mixed_pattern"
     }
 
-    /** 
-     * Assesses overall risk level based on cross-layer analysis.
-     * Uses recursive risk modeling that considers compounding factors.
-     */
     private fun assessRiskLevel(
         proxyHealthy: Boolean,
         identityConsistent: Boolean,
         stuckCount: Int,
         escapeActions: Int
     ): String {
-        // Recursive risk accumulation
         var riskScore = 0.0
-
-        // Proxy risk
-        riskScore += if (!proxyHealthy) 0.3 else 0.0
-
-        // Identity consistency risk
-        riskScore += if (!identityConsistent) 0.25 else 0.0
-
-        // Compounded stuck risk (each stuck cycle amplifies risk)
+        if (!proxyHealthy) riskScore += 0.3
+        if (!identityConsistent) riskScore += 0.25
         riskScore += stuckCount * 0.15
-
-        // Escape actions can be positive (escaping block) or negative (indicating severe issues)
         riskScore += if (escapeActions >= 3) 0.2 else if (escapeActions >= 1) 0.1 else 0.0
-
-        // Apply recursive amplification: if risk > 0.5, apply 20% multiplier (compounding)
-        if (riskScore > 0.5) {
-            riskScore *= 1.2
-        }
-
+        if (riskScore > 0.5) riskScore *= 1.2
         return when {
             riskScore >= 1.0 -> "critical"
             riskScore >= 0.75 -> "high"
@@ -536,116 +536,28 @@ class IntelligenceCoordinator(
         }
     }
 
-    /** 
-     * Calculates humanization score based on behavioral patterns.
-     * Recursive: learns what delay patterns work best for each funnel stage.
-     */
     private fun calculateHumanizationScore(state: AutomationState): Int {
-        var score = 50 // Base score
-
-        // Adaptive delays add human likeness
-        val baseDelay = 5000L
-        if (state.cycleCountdown > baseDelay) {
-            score += 15 // Longer than minimal delay = more human
-        }
-
-        // No sudden jumps in activity
-        if (state.loopCount % 5 != 0 || Random.nextBoolean()) {
-            score += 10 // Variable pacing = human
-        }
-
-        // Occasionally longer pauses (simulating breaks)
-        if (state.cycleCountdown > 15000 && Random.nextBoolean(0.3)) {
-            score += 15 // Extended pause = human break
-        }
-
-        // Stuck count reduces score (being stuck looks inhuman if too consistent)
+        var score = 50
+        if (state.cycleCountdown > 5) score += 15
+        if (state.humanRealismScore > 90) score += 10
+        if (state.cycleCountdown > 15) score += 10
+        score += automationBrain.humanizationBoost * 3
         score -= state.stuckCount * 5
-
-        return score.coerce(0, 100)
+        return score.coerceIn(0, 100)
     }
 
-    /** 
-     * Calculates success rate based on completed runs vs total.
-     * Recursive: factors in quality of completions, not just quantity.
-     */
     private fun calculateSuccessRate(state: AutomationState): Double {
-        val completed = state.completedThisSession.coerceAtLeast(1)
-        val total = state.leadsThisSession.coerceAtLeast(1)
+        val completed = state.completedThisSession.coerceAtLeast(0)
+        val leads = state.leadsThisSession.coerceAtLeast(0)
+        val total = (completed + leads).coerceAtLeast(1)
         val baseRate = completed.toDouble() / total.toDouble()
-
-        // Recursive adjustment: factor in session quality
         val qualityFactor = state.sessionQualityScore / 100.0
-        val adjustedRate = baseRate * 0.7 + qualityFactor * 0.3
-
-        return adjustedRate.coerce(0.0, 1.0)
+        return (baseRate * 0.7 + qualityFactor * 0.3).coerceIn(0.0, 1.0)
     }
 
-    /** 
-     * Schedules identity rotation based on cross-layer insights.
-     * Recursive: considers rotation history to avoid patterns.
-     */
-    private fun scheduleIdentityRotation() {
-        // In production: would trigger after current task, with delay to avoid rotation patterns
-        Log.i("IntelligenceCoordinator", "Identity rotation scheduled due to consistency mismatch")
-        // Would set identityService.rotateAfterTask = true
-    }
-
-    /** 
-     * Detects ping trend from proxy for intelligence feedback.
-     * Recursive: builds ping history over time.
-     */
     private fun detectPingTrend(): Long {
-        // In production: would maintain historical ping array and compute trend
-        return 150L + Random.nextLong(200) // Simulated ping with jitter
+        // تقدير خفيف: فشل متكرر = زمن مرتفع
+        val fails = proxyBridge.peekFailureCount()
+        return 150L + fails.toLong() * 120L + Random.nextLong(80L)
     }
-
-    /** 
-     * Detects best protocol from available options.
-     * Recursive: learns which protocol works best for each target category.
-     */
-    private fun detectBestProtocol(): String {
-        // In production: would maintain success rates per protocol per target type
-        val protocols = listOf("socks5", "http", "socks4")
-        return protocols.random() // Simulated - in production: weighted by success history
-    }
-}
-
-/**
- * Enhanced extension for LocalSocks5HttpBridge to support coordinator commands
- */
-fun LocalSocks5HttpBridge.rotateIfConfigured(): Boolean {
-    val hasConfig = remoteHost.isNotBlank() && remotePort in 1..65535
-    if (hasConfig) {
-        // Reset protocol cache to force re-detection
-        detectedProtocolCache.clear()
-        consecutiveUpstreamFailures.set(0)
-        Log.i(TAG, "Proxy rotation triggered - cache cleared, failures reset")
-        return true
-    }
-    return false
-}
-
-/**
- * Enhanced extension for IdentityService to support coordinator commands
- */
-var IdentityService.rotateAfterTask: Boolean get() = field::rotateAfterTask.isValid()
-
-/**
- * Enhanced extension for SmartAutomationBrain to support coordinator commands
- */
-fun SmartAutomationBrain.triggerEscapeStrategy() {
-    // Set flag to execute escape on next cycle boundary
-    // This could involve: reload page, change CTA, rotate proxy, etc.
-    Log.i("SmartAutomationBrain", "Escape strategy triggered via coordinator")
-    // Would set escapeMode or nextAction flag
-}
-
-/** 
- * Enhanced extension for AutomationState to support humanization factor adjustments
- */
-fun SmartAutomationBrain.increaseHumanizationFactor() {
-    // Increase adaptive delays, add more jitter, more variable pacing
-    Log.i("SmartAutomationBrain", "Humanization factor increased")
-    // Would adjust delay calculations, randomization ranges
 }

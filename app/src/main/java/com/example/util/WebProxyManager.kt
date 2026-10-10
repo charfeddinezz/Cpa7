@@ -37,6 +37,43 @@ object WebProxyManager {
     @Volatile
     private var lastAppliedPass: String = ""
 
+    // ── Intelligence: ذكاء التطبيق — يتعلم نجاح/فشل كل بروكسي ──
+    private data class ApplyStats(var success: Int = 0, var fail: Int = 0)
+
+    private val applyHistory = java.util.concurrent.ConcurrentHashMap<String, ApplyStats>()
+
+    @Volatile
+    var lastApplyOk: Boolean = true
+        private set
+
+    @Volatile
+    var lastApplyAtMs: Long = 0L
+        private set
+
+    private fun upstreamKey(host: String, port: Int) = "${host.trim().lowercase()}:$port"
+
+    fun recordApplyResult(host: String, port: Int, success: Boolean) {
+        val st = applyHistory.computeIfAbsent(upstreamKey(host, port)) { ApplyStats() }
+        synchronized(st) { if (success) st.success++ else st.fail++ }
+        lastApplyOk = success
+        lastApplyAtMs = System.currentTimeMillis()
+    }
+
+    /** معدل نجاح تطبيق هذا البروكسي على WebView — يقرأه المنسق والمنتقي */
+    fun upstreamSuccessRate(host: String, port: Int): Double {
+        val st = applyHistory[upstreamKey(host, port)] ?: return 0.5
+        synchronized(st) {
+            val total = st.success + st.fail
+            if (total == 0) return 0.5
+            return st.success.toDouble() / total.toDouble()
+        }
+    }
+
+    fun lastAppliedKey(): String = upstreamKey(lastAppliedHost, lastAppliedPort)
+
+    /** آخر بروكسي مطبق — يقرأه المنسق لربط صحة التطبيق بصحة النفق */
+    fun currentUpstream(): Pair<String, Int> = lastAppliedHost to lastAppliedPort
+
     private fun clearJvmProxyProperties() {
         try {
             System.clearProperty("socksProxyHost")
@@ -159,11 +196,13 @@ object WebProxyManager {
                     executor,
                     Runnable {
                         Log.i(TAG, "WebView ProxyOverride active -> $cleanHost:$port [$cleanType] (bridge=$localBridgePort)")
+                        recordApplyResult(cleanHost, port, true)
                         onApplied?.invoke(true, "Proxy active: $cleanHost:$port (${cleanType.uppercase()})")
                     }
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to setProxyOverride: ${e.message}", e)
+                recordApplyResult(cleanHost, port, false)
                 onApplied?.invoke(false, "Failed to apply WebView proxy: ${e.message}")
             }
         } else {

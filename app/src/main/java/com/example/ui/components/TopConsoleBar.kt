@@ -140,11 +140,17 @@ fun TopConsoleBar(
                 }
             }
 
-            // Right: Start / Stop Button
+            // Right: Start / Stop Button (لونه يعكس ذكاء المنسق: خطر/نمط)
+            val runningColor = when (automationState.intelRiskLevel) {
+                "critical" -> CpaError
+                "high" -> Color(0xFFE65100)
+                "medium" -> Color(0xFFF9A825)
+                else -> CpaError
+            }
             Button(
                 onClick = onToggleAutomation,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (automationState.isRunning) CpaError else CpaPrimary,
+                    containerColor = if (automationState.isRunning) runningColor else CpaPrimary,
                     contentColor = if (automationState.isRunning) Color.White else Color.Black
                 ),
                 shape = RoundedCornerShape(8.dp),
@@ -162,6 +168,19 @@ fun TopConsoleBar(
                     fontSize = 12.sp,
                     fontFamily = FontFamily.Monospace
                 )
+                if (automationState.isRunning && automationState.intelRiskLevel != "low") {
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = when (automationState.intelRiskLevel) {
+                            "critical" -> "⚠️ خطر حرج"
+                            "high" -> "⚠️ خطر مرتفع"
+                            else -> "⚠️ انتباه"
+                        },
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
             }
         }
     }

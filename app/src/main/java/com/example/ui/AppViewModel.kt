@@ -20,6 +20,8 @@ import com.example.service.ExtractedPlanResult
 import com.example.service.IdentityService
 import com.example.service.SmartAutomationBrain
 import com.example.service.TaskCategoryPlanner
+import com.example.util.IntelligenceCoordinator
+import com.example.util.LocalSocks5HttpBridge
 import com.example.util.WebProxyManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -134,6 +136,87 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // Browser navigation event channel
     private val _browserCommand = MutableStateFlow<BrowserCommand?>(null)
     val browserCommand: StateFlow<BrowserCommand?> = _browserCommand.asStateFlow()
+
+    init {
+        // ربط المنسق بمزودات الحالة الحية — ذكاء متبادل بعد اكتمال التهيئة
+        intelligenceCoordinator.attach(
+            identity = { _identity.value },
+            automationState = { _automationState.value },
+            geo = { _extractedInfo.value },
+            userAgent = {
+                (_browserCommand.value as? BrowserCommand.LoadUrl)?.userAgent
+                    ?: IdentityService.resolveUserAgent("random", isMobileDefault = true)
+            }
+        )
+        // سجل التطبيق يعرض كل ما يفعله المنسق وما سيفعله
+        intelligenceCoordinator.logEmitter = { level, message -> addLog(level, message) }
+        // توزيع الرؤى: المنسق → الواجهة (حقول intel) + حفظ مخنوق
+        intelligenceCoordinator.onInsight = { insight ->
+            val cur = _automationState.value
+            if (cur.intelRiskLevel != insight.riskLevel || cur.intelPattern != insight.behavioralPattern) {
+                _automationState.update {
+                    it.copy(
+                        intelRiskLevel = insight.riskLevel,
+                        intelPattern = insight.behavioralPattern,
+                        intelUpdatedAt = insight.timestamp
+                    )
+                }
+            }
+            // حفظ مخنوق: فقط عند تغير الخطر (تجنب كتابة prefs كل 5 ثوانٍ)
+            if (cur.intelRiskLevel != insight.riskLevel) {
+                try { persistIntelligence() } catch (_: Exception) {}
+            }
+        }
+        restoreIntelligence()
+    }
+
+    // ── ذاكرة مستمرة للذكاء المتقاطع (بروتوكولات + فئات + تعزيز) ──
+    private val intelPrefsKey: String = "cross_layer_intel_v1"
+    private val categoryPrefsKey: String = "category_intel_v1"
+
+    private fun persistIntelligence() {
+        try {
+            val snap = intelligenceCoordinator.snapshotState()
+            val obj = org.json.JSONObject()
+            for ((k, v) in snap) obj.put(k, v)
+            prefs.edit().putString(intelPrefsKey, obj.toString()).apply()
+            val catObj = org.json.JSONObject()
+            for ((k, v) in TaskCategoryPlanner.categoryStatsSnapshot()) {
+                catObj.put(k, "${v.first}/${v.second}")
+            }
+            prefs.edit().putString(categoryPrefsKey, catObj.toString()).apply()
+        } catch (_: Exception) {}
+    }
+
+    private fun restoreIntelligence() {
+        try {
+            val raw = prefs.getString(intelPrefsKey, "") ?: ""
+            if (raw.isNotBlank()) {
+                val obj = org.json.JSONObject(raw)
+                val map = mutableMapOf<String, String>()
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    map[k] = obj.optString(k, "")
+                }
+                intelligenceCoordinator.restoreState(map)
+            }
+            val catRaw = prefs.getString(categoryPrefsKey, "") ?: ""
+            if (catRaw.isNotBlank()) {
+                val obj = org.json.JSONObject(catRaw)
+                val map = mutableMapOf<String, Pair<Int, Int>>()
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val parts = obj.optString(k, "0/0").split("/")
+                    if (parts.size == 2) {
+                        map[k] = Pair(parts[0].toIntOrNull() ?: 0, parts[1].toIntOrNull() ?: 0)
+                    }
+                }
+                if (map.isNotEmpty()) TaskCategoryPlanner.restoreCategoryStats(map)
+            }
+        } catch (_: Exception) {}
+    }
 
     // Completion callback flag from Smart Mode
     private var completionReceivedForCurrentTask: Boolean = false
@@ -1826,22 +1909,44 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         } catch (_: Exception) {}
     }
 
-    // ── P0: scored proxy pick (success × speed × freshness) with sticky-session guard ──
+    // ── P0: scored proxy pick (success × speed × freshness × bridge/manager intel) ──
     private suspend fun pickBestScoredProxy(candidates: List<com.example.data.model.ProxyItem>): com.example.data.model.ProxyItem? {
         if (candidates.isEmpty()) return null
         val now = System.currentTimeMillis()
-        return candidates.maxByOrNull { p ->
+        // ذكاء متقاطع: معدل تطبيق WebView + معدل بروتوكول الجسر يضربان النتيجة
+        fun crossScore(p: com.example.data.model.ProxyItem): Double {
             val total = (p.successCount + p.failCount).coerceAtLeast(1)
             val successRate = p.successCount.toDouble() / total.toDouble()
             val lastFailAgeMin = if (p.lastCheckedAt > 0) ((now - p.lastCheckedAt) / 60000L).coerceAtLeast(0) else 9999L
-            SmartAutomationBrain.scoreProxyForTask(
+            val applyRate = try {
+                com.example.util.WebProxyManager.upstreamSuccessRate(p.host, p.port)
+            } catch (_: Exception) { 0.5 }
+            val protoRate = try {
+                com.example.util.LocalSocks5HttpBridge.protocolSuccessRate(p.type.ifBlank { "socks5" })
+            } catch (_: Exception) { 0.5 }
+            val crossFactor = 0.7 + (applyRate * 0.2) + (protoRate * 0.1)
+            return SmartAutomationBrain.scoreProxyForTask(
                 successRate = if (p.status == "working") successRate.coerceAtLeast(0.6) else successRate,
                 pingMs = p.lastPingMs,
                 failCount = p.failCount,
                 lastFailAgeMin = lastFailAgeMin,
                 qualityScore = p.score
+            ) * crossFactor
+        }
+        val best = candidates.maxByOrNull { crossScore(it) }
+        // سجل القرار: أي بروكسي اختير ولماذا — ماذا فعلنا وماذا سنتوقع
+        best?.let { p ->
+            val total = (p.successCount + p.failCount).coerceAtLeast(1)
+            val successRate = (p.successCount.toDouble() / total.toDouble() * 100).toInt()
+            val applyRate = try {
+                (com.example.util.WebProxyManager.upstreamSuccessRate(p.host, p.port) * 100).toInt()
+            } catch (_: Exception) { 50 }
+            addLog(
+                "info",
+                "🧠 [اختيار البروكسي]: ${p.host}:${p.port} [${p.type.uppercase()}] | نجاح مهام=$successRate% | نجاح تطبيق=$applyRate% | ping=${p.lastPingMs}ms | التوقع: مسار مستقر لهذه الدورة"
             )
         }
+        return best
     }
 
     // ── P1: Captcha hook (manual wait + provider placeholder) ──
@@ -1953,24 +2058,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (_automationState.value.isRunning) {
             stopAutomation()
         } else {
-            // IntelligenceCoordinator pre-flight analysis before starting
-            intelligenceCoordinator.analyzeProxyRecursive()
-            intelligenceCoordinator.analyzeIdentityRecursive()
-            intelligenceCoordinator.analyzeAutomationRecursive()
-
-            // Issue any adaptive commands from previous cycle's analysis
-            val lastInsight = intelligenceCoordinator.lastCrossLayerInsight
-            if (lastInsight.riskLevel == "critical" || lastInsight.riskLevel == "high") {
-                addLog("warning", "⚠️ استخبارات متقاطعة: مستوى خطر ${lastInsight.riskLevel} - سيتم تطبيق تدابير وقائية")
-                // Apply preventive measures from previous session
-                if (lastInsight.recommendedActions.any { it == "rotate_proxy_immediately" }) {
-                    intelligenceCoordinator.proxyBridge.rotateIfConfigured()
-                    addLog("info", "✅ تم دوران البروكسي تلقائياً كإجراء وقائي")
+            // IntelligenceCoordinator pre-flight: ذكاء متقاطع قبل التشغيل
+            val preflight = intelligenceCoordinator.runPreflight()
+            if (preflight.riskLevel == "critical" || preflight.riskLevel == "high") {
+                addLog("warning", "⚠️ استخبارات متقاطعة: مستوى خطر ${preflight.riskLevel} (${preflight.behavioralPattern}) - تدابير وقائية")
+                if (preflight.recommendedActions.any { it == "rotate_proxy_immediately" }) {
+                    if (intelligenceCoordinator.proxyBridge.rotateIfConfigured()) {
+                        addLog("info", "✅ تم دوران البروكسي تلقائياً كإجراء وقائي")
+                    }
                 }
-                if (lastInsight.recommendedActions.any { it == "rotate_identity_to_match_proxy" }) {
-                    identityService.scheduleIdentityRotation()
+                if (preflight.recommendedActions.any { it == "rotate_identity_to_match_proxy" || it == "reset_identity_fingerprints" }) {
+                    IdentityService.scheduleIdentityRotation()
                     addLog("info", "✅ تم جدولة دوران الهوية لتطابق البروكسي")
                 }
+                if (preflight.recommendedActions.any { it == "execute_escape_strategy" }) {
+                    SmartAutomationBrain.triggerEscapeStrategy()
+                }
+            } else {
+                addLog("info", "🧠 فحص الذكاء: ${preflight.behavioralPattern} — خطر ${preflight.riskLevel} — ${preflight.predictedOutcome}")
             }
 
             startAutomation()
@@ -2481,7 +2586,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         val s = _settings.value
         if (!s.humanSimulationEnabled) return
-        val waitSec = SmartAutomationBrain.computeStageTransitionWaitSec(
+        val baseWaitSec = SmartAutomationBrain.computeStageTransitionWaitSec(
             fromStageCode = fromStageCode,
             toStageCode = toStageCode,
             profile = s.humanSimulationProfile,
@@ -2489,6 +2594,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             maxSec = s.stageTransitionWaitMaxSec,
             complexity = complexity
         )
+        // ذكاء موزع: تعزيز الأنسنة من المنسق يطيل الانتظار تدريجياً (كل مستوى +1 ثانية، بحد أقصى +5)
+        val waitSec = baseWaitSec + SmartAutomationBrain.humanizationBoost.coerceIn(0, 5)
         if (waitSec <= 0) return
 
         val transitionLabel = "$fromStageAr ➔ $toStageAr"
@@ -2531,6 +2638,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // 🧠 Fresh awareness per task repetition — don't carry stale stuck state
         brainMemory = SmartAutomationBrain.initialMemory()
         completionReceivedForCurrentTask = false
+        // ذكاء موزع: لاحظ طلب الهروب من المنسق (العقل يستهلكه وينفذه داخل decide)
+        if (SmartAutomationBrain.peekEscapeRequest()) {
+            _automationState.update { it.copy(brainExecutionMode = "alt_option_3") }
+            addLog("warning", "🧠 [هروب موجه]: المنسق رصد نمط خطر — سيتصرف العقل فور رصد أول صفحة.", task.name)
+        }
+        if (IdentityService.scheduleRotation) {
+            addLog("info", "🪪 [دوران موجه]: تدوير الهوية طُلب من تحليل متقاطع — تُولد هوية جديدة الآن.", task.name)
+        }
         
         // 0. Work Template resolution if attached
         var templateStepsJson: String? = null
@@ -2818,7 +2933,38 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val converted = completionReceivedForCurrentTask ||
             _automationState.value.brainNextAction == SmartAutomationBrain.NextAction.COMPLETE_CONVERSION.code
         SmartAutomationBrain.recordOutcome(taskLearning, task.id, converted)
+        // ذكاء موزع: الفئات تتعلم + البروكسي يُقيّم + الدوران يُستهلك — كلها في السجل
+        try {
+            TaskCategoryPlanner.recordCategoryOutcome(parsedCats, converted)
+            val catDetail = parsedCats.take(3).joinToString("، ") { c ->
+                "$c (${(TaskCategoryPlanner.categoryConversionRate(c) * 100).toInt()}%)"
+            }
+            addLog(
+                if (converted) "success" else "info",
+                "📊 [تعلم الفئات]: تحويل=${if (converted) "نعم ✅" else "لا ❌"} | معدلات الآن: ${catDetail.ifBlank { "—" }} | التالي: الفئات الأعلى معدلاً تتقدم في الترتيب",
+                task.name
+            )
+            if (IdentityService.consumeRotationRequest()) {
+                addLog("info", "🪪 [دوران مُنفذ]: تم تدوير الهوية بعد المهمة بطلب متقاطع — المهمة القادمة بهوية جديدة.", task.name)
+            }
+            if (s.proxyEnabled && s.proxyHost.isNotBlank()) {
+                val match = proxyDao.getAllProxiesList().firstOrNull {
+                    it.host.equals(s.proxyHost.trim(), ignoreCase = true) &&
+                        it.port.toString() == s.proxyPort.trim()
+                }
+                if (match != null) {
+                    if (converted) {
+                        proxyDao.recordProxySuccess(match.id)
+                        addLog("success", "🌐 [تقييم البروكسي]: ${match.host}:${match.port} سُجل نجاح ✅ (نجاحات=${match.successCount + 1}) — سيُفضل في الاختيار القادم.", task.name)
+                    } else {
+                        proxyDao.recordProxyFailure(match.id)
+                        addLog("warning", "🌐 [تقييم البروكسي]: ${match.host}:${match.port} سُجل فشل ⚠️ (فشل=${match.failCount + 1}) — سينخفض ترتيبه.", task.name)
+                    }
+                }
+            }
+        } catch (_: Exception) {}
         persistLearning()
+        try { persistIntelligence() } catch (_: Exception) {}
         val rate = taskLearning[task.id]?.let { (it.successRate * 100).toInt() } ?: 50
         // P0 ledger: stuck without conversion counts toward retry limit (poison-task guard)
         if (!converted && _automationState.value.stuckCount >= 4) {

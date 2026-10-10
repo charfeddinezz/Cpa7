@@ -154,5 +154,9 @@ data class AutomationState(
     val stageWaitTotalSec: Int = 0,
     val stageTransitionLabel: String = "",
     val humanActionStatusAr: String = "🧬 محاكاة بشرية نشطة ومتكاملة",
-    val humanRealismScore: Int = 98
+    val humanRealismScore: Int = 98,
+    // ── Cross-layer intelligence telemetry (يكتبها المنسق، تقرأها الواجهة) ──
+    val intelRiskLevel: String = "low", // low/medium/high/critical
+    val intelPattern: String = "mixed_pattern",
+    val intelUpdatedAt: Long = 0L
 )

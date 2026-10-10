@@ -52,6 +52,42 @@ data class PresetOfferPlan(
 
 object TaskCategoryPlanner {
 
+    // ── Intelligence: ذكاء الفئات — يتعلم أي فئة تحول فعلاً ──
+    private data class CategoryStats(var runs: Int = 0, var conversions: Int = 0)
+
+    private val categoryStats = java.util.concurrent.ConcurrentHashMap<String, CategoryStats>()
+
+    /** يسجلها AppViewModel بعد كل مهمة: الفئات × هل تحولت */
+    fun recordCategoryOutcome(categories: List<String>, converted: Boolean) {
+        for (raw in categories) {
+            val key = raw.trim().lowercase().ifBlank { continue }
+            val st = categoryStats.computeIfAbsent(key) { CategoryStats() }
+            synchronized(st) {
+                st.runs++
+                if (converted) st.conversions++
+            }
+        }
+    }
+
+    /** معدل تحويل الفئة — يستخدمه الترتيب الذكي والأولويات */
+    fun categoryConversionRate(category: String): Double {
+        val st = categoryStats[category.trim().lowercase()] ?: return 0.5
+        synchronized(st) {
+            if (st.runs == 0) return 0.5
+            return st.conversions.toDouble() / st.runs.toDouble()
+        }
+    }
+
+    /** لقطة للحفظ المستمر + استعادة */
+    fun categoryStatsSnapshot(): Map<String, Pair<Int, Int>> =
+        categoryStats.entries.associate { it.key to Pair(it.value.runs, it.value.conversions) }
+
+    fun restoreCategoryStats(snapshot: Map<String, Pair<Int, Int>>) {
+        for ((k, v) in snapshot) {
+            categoryStats[k] = CategoryStats(v.first, v.second)
+        }
+    }
+
     val PRESET_CATEGORIES = listOf(
         CategoryDefinition(
             id = "offer_click",
@@ -639,7 +675,7 @@ object TaskCategoryPlanner {
                         description = "${def.description} (في التبويب الجديد للعرض)"
                     )
                 } else null
-            }.sortedBy { it.priority }
+            }.sortedWith(compareBy({ it.priority }, { -categoryConversionRate(it.id) }))
 
             return (listOf(lockerStep, clickStep, tabStep) + otherSteps).mapIndexed { idx, s ->
                 s.copy(order = idx + 1)
@@ -696,10 +732,10 @@ object TaskCategoryPlanner {
             }
         }
 
-        // Sort by funnel priority and re-index
+        // Sort by funnel priority, breaking ties by learned conversion rate, then re-index
         return matchedList
             .distinctBy { it.id }
-            .sortedBy { it.priority }
+            .sortedWith(compareBy({ it.priority }, { -categoryConversionRate(it.id) }))
             .mapIndexed { index, step ->
                 step.copy(order = index + 1)
             }
