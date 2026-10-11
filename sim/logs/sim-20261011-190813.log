@@ -1,8 +1,0 @@
-19:08:13 [INFO] 🚀 مهمة DSL: Singingfiles #75222 rewardspark (ميزانية 1)
-19:08:13 [INFO] 🌐 خروج المهمة: 104.207.33.161
-19:08:14 [INFO]   hop: HTTP 200 1015B ← https://singingfiles.com/show.php?l=0&u=2214761&id=75222
-19:08:17 [INFO]   hop: HTTP 200 211358B ← https://fly.swiftfalconsmobi.com/click?pid=701&offer_id=91594&sub1=1324353883&sub5=22
-19:08:17 [INFO] 🌐 goto: 2 قفزات ← https://www.google.com/ (211358B)
-19:08:17 [INFO] ✅ خطوة 1/4 [goto]: 
-19:08:17 [WARNING] ⛔ خطوة 2/4 [submit]: form not found
-19:08:17 [ERROR] 🏁 الحكم: NOT_CONVERTED
