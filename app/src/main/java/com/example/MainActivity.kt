@@ -73,6 +73,15 @@ class MainActivity : ComponentActivity() {
             )
         } catch (_: Exception) {}
         enableEdgeToEdge()
+        // Foreground-service notifications need runtime permission on Android 13+
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+                    android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001)
+            }
+        } catch (_: Exception) {}
         setContent {
             MyApplicationTheme {
                 CpaAutomatorApp()
@@ -110,7 +119,9 @@ class MainActivity : ComponentActivity() {
         // ── Tracker mode gate: allow = no blocking, block/deceive = block network ──
         private val trackerBlockProvider: () -> Boolean = { true },
         // ── Kill-switch: تصحيح XHR يمكن تعطيله من الإعدادات ──
-        private val xhrCorrectionProvider: () -> Boolean = { true }
+        private val xhrCorrectionProvider: () -> Boolean = { true },
+        // ── Renderer recovery: إعادة إنشاء WebView بعد موت العملية ──
+        private val onRenderProcessGoneCallback: ((Boolean) -> Unit)? = null
     ) : WebViewClient() {
 
         /**
@@ -447,7 +458,9 @@ class MainActivity : ComponentActivity() {
             view: WebView?,
             detail: RenderProcessGoneDetail?
         ): Boolean {
-            Log.w(TAG, "WebView render process exited (didCrash=${detail?.didCrash()}). Handled gracefully.")
+            val crashed = detail?.didCrash() == true
+            Log.w(TAG, "WebView render process exited (didCrash=$crashed). Recreating WebView.")
+            try { onRenderProcessGoneCallback?.invoke(crashed) } catch (_: Exception) {}
             return true
         }
 
@@ -824,6 +837,9 @@ fun CpaAutomatorApp(vm: AppViewModel = viewModel()) {
     val offerClickItems by vm.offerClickItems.collectAsState()
     val enabledClickItems by vm.enabledClickItems.collectAsState()
     val workTemplates by vm.workTemplates.collectAsState()
+    val aiConsole by vm.aiConsole.collectAsState()
+    val agentState by vm.agentState.collectAsState()
+    val agentHistory by vm.agentHistory.collectAsState()
 
     var browserInitialized by remember { mutableStateOf(true) }
     val isBrowserTab = (currentTab == ScreenTab.BROWSER)
@@ -901,7 +917,10 @@ fun CpaAutomatorApp(vm: AppViewModel = viewModel()) {
                         onShieldTelemetry = { vm.onShieldTelemetry(it) },
                         onShieldSelfTestResult = { vm.onShieldSelfTestResult(it) },
                         onIsHostileHost = { vm.isHostileHost(it) },
-                        onSurveillanceBlocked = { vm.onSurveillanceBlocked(it) }
+                        onSurveillanceBlocked = { vm.onSurveillanceBlocked(it) },
+                        onWebViewRendererGone = { tabId, crashed, url, gaveUp -> vm.onWebViewRendererGone(tabId, crashed, url, gaveUp) },
+                        onConsoleError = { vm.addLog("warning", it) },
+                        onAiFixResult = { fixId, json -> vm.onAiFixResult(fixId, json) }
                     )
                 }
             }
@@ -974,7 +993,22 @@ fun CpaAutomatorApp(vm: AppViewModel = viewModel()) {
                     onTriggerEscape = { vm.triggerEscapeNow() },
                     onNudgeHumanization = { vm.nudgeHumanization(it) },
                     onSetKillSwitch = { key, enabled -> vm.setKillSwitch(key, enabled) },
+                    onBatteryExemption = { vm.openBatteryExemptionSettings() },
                     statsProvider = { vm.shieldStatsSnapshot() }
+                )
+                ScreenTab.AI -> com.example.ui.screens.AiScreen(
+                    settings = settings,
+                    aiConsole = aiConsole,
+                    totalScore = vm.aiTotalScore(),
+                    ledger = vm.aiLedgerSnapshot(),
+                    tasks = tasks,
+                    agentState = agentState,
+                    agentHistory = agentHistory,
+                    onRunFixRound = { vm.runAiFixRound(manual = true) },
+                    onToggleAutoFix = { vm.setAiAutoFix(it) },
+                    onClearConsole = { vm.clearAiConsole() },
+                    onStartMission = { vm.startAgentMission(it) },
+                    onStopMission = { vm.stopAgentMission() }
                 )
                 ScreenTab.PROXIES -> ProxyPoolScreen(
                     proxies = proxies,

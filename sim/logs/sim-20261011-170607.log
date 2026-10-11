@@ -1,0 +1,29 @@
+17:06:07 [INFO] 🌐 البروكسي: خروج=209.50.171.59 (US Ashburn, 403ms) — الاعتمادات مخفية
+17:06:07 [INFO] 🧠 الخطة 'Singingfiles #75158' (9 مراحل)
+17:06:07 [INFO] 📊 خط أساس RSS لخروج البروكسي: lead_found=False 
+17:06:07 [INFO] 🔁 المحاولة #1 عبر البروكسي (مُحيل=https://www.google.com/)
+17:06:08 [INFO] 🌐 قفزة 1: HTTP 200 | 1015B | 551ms | كوكيز=0
+17:06:08 [INFO] 🔀 (meta-refresh) → https://fly.swiftfalconsmobi.com/click?pid=701&offer_id=97264&sub1=1324352645&sub5=2214761
+17:06:09 [INFO] 🌐 قفزة 2: HTTP 302 | 0B | 632ms | كوكيز=2
+17:06:10 [INFO] 🌐 قفزة 3: HTTP 302 | 0B | 1090ms | كوكيز=2
+17:06:11 [INFO] 🌐 قفزة 4: HTTP 302 | 329B | 415ms | كوكيز=2
+17:06:12 [INFO] 🌐 قفزة 5: HTTP 302 | 0B | 433ms | كوكيز=2
+17:06:13 [INFO] 🌐 قفزة 6: HTTP 301 | 0B | 409ms | كوكيز=2
+17:06:14 [INFO] 🌐 قفزة 7: HTTP 302 | 0B | 406ms | كوكيز=3
+17:06:15 [INFO] 🌐 قفزة 8: HTTP 200 | 196752B | 728ms | كوكيز=3
+17:06:15 [INFO] 🔍 'AARP – Join or Renew Today' | نص=30188 | حقول بريد=0 نص=0 | أزرار=26 | CTA='-' | فارغة=False | كابتشا=False | لوكر=False | كلمات=[]
+17:06:15 [WARNING] 🔎 RSS بعد #1: لا تحويل (NEEDS_BROWSER_INTERACTION) — إعادة
+17:06:15 [INFO] ⏳ فاصل 40 ث...
+17:06:55 [INFO] 🔁 المحاولة #2 عبر البروكسي (مُحيل=https://www.bing.com/)
+17:06:56 [INFO] 🌐 قفزة 1: HTTP 200 | 1015B | 525ms | كوكيز=3
+17:06:56 [INFO] 🔀 (meta-refresh) → https://fly.swiftfalconsmobi.com/click?pid=701&offer_id=97264&sub1=1324352645&sub5=2214761
+17:06:57 [INFO] 🌐 قفزة 2: HTTP 302 | 0B | 622ms | كوكيز=3
+17:06:57 [INFO] 🌐 قفزة 3: HTTP 302 | 0B | 446ms | كوكيز=3
+17:06:58 [INFO] 🌐 قفزة 4: HTTP 301 | 0B | 371ms | كوكيز=3
+17:06:59 [INFO] 🌐 قفزة 5: HTTP 302 | 0B | 423ms | كوكيز=3
+17:07:00 [INFO] 🌐 قفزة 6: HTTP 200 | 196752B | 755ms | كوكيز=3
+17:07:00 [INFO] 🔍 'AARP – Join or Renew Today' | نص=30188 | حقول بريد=0 نص=0 | أزرار=26 | CTA='-' | فارغة=False | كابتشا=False | لوكر=False | كلمات=[]
+17:07:01 [WARNING] 🔎 RSS بعد #2: لا تحويل (NEEDS_BROWSER_INTERACTION) — انتهت الميزانية
+17:07:01 [ERROR] ⛔ لا تحويل بعد 2 محاولات. الأخير: NEEDS_BROWSER_INTERACTION
+17:07:01 [INFO] 📄 التقرير: /workspaces/Cpa7/sim/logs/proxied-20261011-170701.json
+17:07:01 [INFO] 🏁 الحكم: NOT_CONVERTED_BUDGET_SPENT

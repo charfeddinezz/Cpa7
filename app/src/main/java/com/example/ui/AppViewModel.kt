@@ -44,6 +44,7 @@ enum class ScreenTab(val id: String, val title: String, val titleAr: String = ""
     TASKS("tasks", "Tasks", "المهام"),
     BROWSER("browser", "Browser", "المتصفح"),
     SHIELD("shield", "Shield", "الدرع"),
+    AI("ai", "AI Agent", "الوكيل"),
     TEMPLATES("templates", "Templates", "قوالب العمل"),
     CLICK("click", "Offer Click", "شاشة النقرة"),
     INFO("info", "Identity", "الهوية"),
@@ -170,6 +171,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         restoreIntelligence()
+        restoreAgentHistory()
     }
 
     // ── ذاكرة مستمرة للذكاء المتقاطع (بروتوكولات + فئات + تعزيز) ──
@@ -238,6 +240,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             if (geoMap.isNotEmpty()) com.example.util.GeoIntel.restore(geoMap)
             val seqMap = parsePairMap(prefs.getString(seqPrefsKey, "") ?: "")
             if (seqMap.isNotEmpty()) SmartAutomationBrain.SequenceIntel.restore(seqMap)
+            restoreAiLedger()
         } catch (_: Exception) {}
     }
 
@@ -257,6 +260,33 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // ── Blank-wall intelligence: عدّاد الجدران البيضاء لكل مهمة + المهمة الجارية ──
     private val blankWallCount: MutableMap<String, Int> = mutableMapOf()
     private var currentRunTask: TaskEntity? = null
+    // ── Wrong-page intelligence: عدّاد متتالٍ + علم إجهاض التشغيل لتوفير الميزانية ──
+    private val wrongPageStreak: MutableMap<String, Int> = mutableMapOf()
+    @Volatile
+    private var abortRunRequested: Boolean = false
+    // ── Session conversions: تحويلات الجلسة لكل مهمة (للفرصة الثانية والتخطي الاختياري) ──
+    private val sessionTaskConversions: MutableMap<String, Int> = mutableMapOf()
+
+    private fun String.hostForLog(): String {
+        return try {
+            java.net.URI(this).host?.takeIf { it.isNotBlank() } ?: this.take(28)
+        } catch (_: Exception) { this.take(28) }
+    }
+
+    /** تشريح سبب الفشل من الحالة النهائية — يوجه المستخدم والذكاء معاً */
+    private fun autopsyReport(): String {
+        val st = _automationState.value
+        val causes = mutableListOf<String>()
+        if (st.isPageBlocked) causes.add("حظر صفحة 🚫")
+        if (st.isCaptchaPresent) causes.add("كابتشا بلا حل 🧩")
+        if (st.stuckCount >= 4) causes.add("تعلق عميق (${st.stuckCount})")
+        else if (st.stuckCount >= 2) causes.add("تعلق جزئي (${st.stuckCount})")
+        if (st.funnelStageIndex < 6) causes.add("توقف عند المرحلة ${st.funnelStageIndex}/6")
+        if (!st.activeClickText.isNullOrBlank()) causes.add("الهدف '${st.activeClickText?.take(24)}' لم يُنقر/يُكتشف")
+        if (st.brainExecutionMode != "normal") causes.add("وضع ${st.brainExecutionMode}")
+        if (causes.isEmpty()) causes.add("لا إشارة واضحة — راجع اللقطة/السجل")
+        return causes.joinToString(" + ") + " | المرحلة التالية المقترحة: ${st.smartDecisionTitle.ifBlank { st.activeDirectiveTitle.ifBlank { "إعادة المحاولة بطفرة" } }}"
+    }
 
     /** البروكسي المطابق للإعدادات الحالية (يُستخدم للحرق/التقييم) */
     private suspend fun findCurrentProxyItem(): com.example.data.model.ProxyItem? {
@@ -454,6 +484,316 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val entry = LogEntry(level = level, message = message, taskName = taskName)
         _logs.update { listOf(entry) + it.take(250) }
         try { com.example.util.LogFileWriter.append(level, message, taskName) } catch (_: Exception) {}
+    }
+
+    /** موت عملية عرض WebView: سجل + عدّاد، وإعادة الإنشاء والتحميل تتم في الواجهة */
+    fun onWebViewRendererGone(tabId: String, didCrash: Boolean, url: String, gaveUp: Boolean) {
+        if (gaveUp) {
+            addLog("error", "💥 [تعطل العارض]: التبويب $tabId تحطم 3 مرات ($url) — توقف إعادة الإنشاء التلقائية، أعد التحميل يدوياً.")
+            try { intelligenceCoordinator.addAnomalies(3) } catch (_: Exception) {}
+            return
+        }
+        addLog(
+            if (didCrash) "error" else "warning",
+            "💥 [العارض]: عملية عرض التبويب $tabId ${if (didCrash) "تحطمت" else "انتهت"} ($url) — إعادة إنشاء WebView وإعادة التحميل تلقائياً."
+        )
+    }
+
+    // ── AI Agent ledger & console: محاسبة الوكيل المفتوح بالنقاط ──
+    data class AiTaskLedger(
+        var rounds: Int = 0,
+        var fixesOk: Int = 0,
+        var fixesFail: Int = 0,
+        var converted: Boolean = false,
+        var score: Int = 0
+    )
+
+    private val aiLedger: MutableMap<String, AiTaskLedger> = mutableMapOf()
+    private val _aiConsole = MutableStateFlow<List<String>>(emptyList())
+    val aiConsole: StateFlow<List<String>> = _aiConsole.asStateFlow()
+
+    private var lastAnalysisReport: TaskCategoryPlanner.PageAnalysisReport? = null
+    private var aiFixPageUrl: String = ""
+    private var aiFixRoundsThisPage: Int = 0
+    private val aiTriedFixesThisPage: MutableSet<String> = mutableSetOf()
+    private val aiPrefsKey: String = "ai_ledger_v1"
+
+    fun aiTotalScore(): Int = aiLedger.values.sumOf { it.score }
+
+    fun aiLedgerSnapshot(): Map<String, AiTaskLedger> = aiLedger.toMap()
+
+    private fun aiLog(msg: String) {
+        val line = "${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())} $msg"
+        _aiConsole.update { (listOf(line) + it).take(120) }
+    }
+
+    private fun aiLedgerFor(taskId: String): AiTaskLedger {
+        return aiLedger.getOrPut(taskId) { AiTaskLedger() }
+    }
+
+    private fun persistAiLedger() {
+        try {
+            val obj = org.json.JSONObject()
+            for ((k, v) in aiLedger) {
+                val o = org.json.JSONObject()
+                o.put("rounds", v.rounds)
+                o.put("fixesOk", v.fixesOk)
+                o.put("fixesFail", v.fixesFail)
+                o.put("converted", v.converted)
+                o.put("score", v.score)
+                obj.put(k, o)
+            }
+            prefs.edit().putString(aiPrefsKey, obj.toString()).apply()
+        } catch (_: Exception) {}
+    }
+
+    private fun restoreAiLedger() {
+        try {
+            val raw = prefs.getString(aiPrefsKey, "") ?: ""
+            if (raw.isBlank()) return
+            val obj = org.json.JSONObject(raw)
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                val o = obj.optJSONObject(k) ?: continue
+                aiLedger[k] = AiTaskLedger(
+                    rounds = o.optInt("rounds", 0),
+                    fixesOk = o.optInt("fixesOk", 0),
+                    fixesFail = o.optInt("fixesFail", 0),
+                    converted = o.optBoolean("converted", false),
+                    score = o.optInt("score", 0)
+                )
+            }
+        } catch (_: Exception) {}
+    }
+
+    /** جولة إصلاح واحدة: شخّص → اختر إصلاحاً غير مجرب → نفّذ عبر المتصفح */
+    fun runAiFixRound(manual: Boolean = false) {
+        val report = lastAnalysisReport
+        if (report == null) {
+            aiLog("⚠️ لا تحليل صفحة بعد — افتح صفحة أولاً.")
+            return
+        }
+        val pageUrl = report.url.ifBlank { _automationState.value.currentUrl.orEmpty() }
+        if (pageUrl != aiFixPageUrl) {
+            aiFixPageUrl = pageUrl
+            aiFixRoundsThisPage = 0
+            aiTriedFixesThisPage.clear()
+        }
+        val issues = SmartAutomationBrain.AiAgent.diagnose(report)
+        // سياق إضافي من الحالة: لوكر عالق يُقدَّم أولاً
+        val fullIssues = if (_automationState.value.lockerDetectedOnPage && !aiTriedFixesThisPage.contains("kill-overlay")) {
+            listOf(
+                SmartAutomationBrain.AiIssue("locker-stall", "لوكر مرصود بلا تقدم — مسح الطبقات", "Locker stall", "kill-overlay")
+            ) + issues
+        } else {
+            issues
+        }
+        if (!SmartAutomationBrain.AiAgent.shouldRetry(aiFixRoundsThisPage, aiTriedFixesThisPage, fullIssues)) {
+            aiLog("⛔ انتهت جولات هذه الصفحة ($aiFixRoundsThisPage/${SmartAutomationBrain.AiAgent.MAX_ROUNDS_PER_PAGE}) — انتظر تحليلاً جديداً.")
+            return
+        }
+        val next = SmartAutomationBrain.AiAgent.nextFix(fullIssues, aiTriedFixesThisPage) ?: return
+        aiFixRoundsThisPage++
+        aiTriedFixesThisPage.add(next.fixKey)
+        val tid = _automationState.value.currentTaskId ?: "manual"
+        aiLedgerFor(tid).rounds++
+        aiLog("🔍 [${next.id}] ${next.titleAr} — تنفيذ الكود المفتوح...")
+        _browserCommand.value = BrowserCommand.ExecuteAiFix(
+            AutomationScriptBuilder.buildAiFixScript(next.fixKey),
+            next.fixKey
+        )
+        persistAiLedger()
+    }
+
+    /** نتيجة تنفيذ الإصلاح من الصفحة (JSON: fix/ok/detail) */
+    fun onAiFixResult(fixId: String, rawJson: String?) {
+        try {
+            val wrapped = "[${rawJson ?: "null"}]"
+            val decoded = try {
+                org.json.JSONArray(wrapped).optString(0, "")
+            } catch (_: Exception) { "" }
+            if (decoded.isBlank() || decoded == "null") {
+                aiLog("⚠️ [$fixId] بلا نتيجة (الصفحة لم تنفذ الكود).")
+                return
+            }
+            val obj = org.json.JSONObject(decoded)
+            val ok = obj.optBoolean("ok", false)
+            val detail = obj.optString("detail", "")
+            val tid = _automationState.value.currentTaskId ?: "manual"
+            val ledger = aiLedgerFor(tid)
+            if (ok) {
+                ledger.fixesOk++
+                ledger.score += SmartAutomationBrain.AiAgent.SCORE_FIX_OK
+                aiLog("✅ [$fixId] نجح: $detail (+${SmartAutomationBrain.AiAgent.SCORE_FIX_OK} نقاط، المجموع ${ledger.score})")
+            } else {
+                ledger.fixesFail++
+                ledger.score -= SmartAutomationBrain.AiAgent.SCORE_ROUND_COST
+                aiLog("❌ [$fixId] بلا أثر: $detail — سيجرب البديل التالي.")
+                // تكرار تلقائي ذكي: جرّب الإصلاح التالي فوراً إن كان الوضع تلقائياً
+                if (_settings.value.aiAutoFix && _automationState.value.isRunning) {
+                    runAiFixRound(manual = false)
+                }
+            }
+            persistAiLedger()
+        } catch (e: Exception) {
+            aiLog("⚠️ تعذر تحليل نتيجة الإصلاح: ${e.message}")
+        }
+    }
+
+    fun setAiAutoFix(enabled: Boolean) {
+        updateSettings(_settings.value.copy(aiAutoFix = enabled))
+        aiLog(if (enabled) "🤖 الوضع التلقائي مفعّل: إصلاح بعد كل تحليل صفحة." else "🤖 الوضع التلقائي متوقف (يدوي فقط).")
+        addLog("info", "🤖 [وكيل AI]: الإصلاح التلقائي ${if (enabled) "مفعّل ✅" else "معطّل ⏸️"}")
+    }
+
+    fun clearAiConsole() {
+        _aiConsole.value = emptyList()
+    }
+
+    // ── AI Agent Missions: الوكيل يفحص ← يكرر ← يصلح DOM ← يُحاسَب بالتحويل ──
+    private val _agentState =
+        MutableStateFlow(com.example.service.AgentServer.AgentState())
+    val agentState: StateFlow<com.example.service.AgentServer.AgentState> = _agentState.asStateFlow()
+
+    private var agentJob: Job? = null
+    private var agentRepairs: Int = 0
+    private var agentSameTargetCount: Int = 0
+    private var agentLastTarget: String? = null
+    private val agentHistoryKey = "agent_history_v1"
+    private val _agentHistory =
+        MutableStateFlow<List<com.example.service.AgentServer.AgentRecord>>(emptyList())
+    val agentHistory: StateFlow<List<com.example.service.AgentServer.AgentRecord>> = _agentHistory.asStateFlow()
+
+    private fun agentActive(): Boolean {
+        val p = _agentState.value.phase
+        return p != com.example.service.AgentServer.AgentPhase.IDLE &&
+            p != com.example.service.AgentServer.AgentPhase.SCORED &&
+            p != com.example.service.AgentServer.AgentPhase.STOPPED
+    }
+
+    private fun agentTrace(msg: String) {
+        _agentState.update {
+            it.copy(trace = (it.trace + msg).takeLast(50))
+        }
+    }
+
+    private fun agentSetPhase(p: com.example.service.AgentServer.AgentPhase) {
+        _agentState.update { it.copy(phase = p) }
+        agentTrace("${com.example.service.AgentServer.phaseLabelAr(p)}")
+    }
+
+    fun startAgentMission(task: TaskEntity) {
+        if (agentJob?.isActive == true) {
+            addLog("warning", "🤖 مهمة وكيل جارية بالفعل — أوقفها أولاً.", task.name)
+            return
+        }
+        if (automationJob?.isActive == true) {
+            stopAutomation(clearBrowser = false)
+            addLog("info", "🤖 أُوقفت الحملة العامة — الوكيل يتولى '${task.name}' منفرداً.", task.name)
+        }
+        agentRepairs = 0
+        agentSameTargetCount = 0
+        agentLastTarget = null
+        _agentState.value = com.example.service.AgentServer.AgentState(
+            phase = com.example.service.AgentServer.AgentPhase.OBSERVING,
+            missionName = task.name,
+            taskId = task.id,
+            trace = listOf("🚀 بدء مهمة الوكيل: ${task.name}")
+        )
+        addLog("info", "🤖 [الوكيل]: بدء مهمة '${task.name}' — فحص ← تنفيذ ← إصلاح DOM ← محاسبة بالتحويل.", task.name)
+        agentJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                agentSetPhase(com.example.service.AgentServer.AgentPhase.REASONING)
+                val leadsBefore = _automationState.value.leadsThisSession
+                agentSetPhase(com.example.service.AgentServer.AgentPhase.ACTING)
+                val converted = runSingleTask(task)
+                agentSetPhase(com.example.service.AgentServer.AgentPhase.VERIFYING)
+                val leadsAfter = _automationState.value.leadsThisSession
+                val leadConfirmed = leadsAfter > leadsBefore
+                val steps = brainMemory.actionTrace.size
+                val score = com.example.service.AgentServer.scoreMission(
+                    steps = steps,
+                    repairs = agentRepairs,
+                    converted = converted,
+                    leadConfirmed = leadConfirmed
+                )
+                _agentState.update { it.copy(phase = com.example.service.AgentServer.AgentPhase.SCORED, steps = steps, repairs = agentRepairs, lastScore = score) }
+                agentTrace("🏁 ${score.detailAr} (الدرجة ${score.total}/100 · ${score.grade})")
+                addLog(
+                    if (converted) "success" else "error",
+                    "🤖 [محاسبة الوكيل '${task.name}']: ${score.detailAr} الدرجة: ${score.total}/100 (${score.grade}) | خطوات=$steps إصلاحات=$agentRepairs صيد=${if (leadConfirmed) "مؤكد ✅" else "لا"}",
+                    task.name
+                )
+                persistAgentHistory(task.name, score)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                _agentState.update { it.copy(phase = com.example.service.AgentServer.AgentPhase.STOPPED) }
+                throw e
+            } catch (e: Exception) {
+                addLog("error", "🤖 خطأ المهمة: ${e.message}", task.name)
+                _agentState.update { it.copy(phase = com.example.service.AgentServer.AgentPhase.STOPPED) }
+            }
+        }
+    }
+
+    fun stopAgentMission() {
+        agentJob?.cancel()
+        agentJob = null
+        if (agentActive()) {
+            _agentState.update { it.copy(phase = com.example.service.AgentServer.AgentPhase.STOPPED) }
+            agentTrace("⏸️ أُوقفت المهمة يدوياً")
+            addLog("warning", "🤖 أُوقفت مهمة الوكيل.")
+        }
+    }
+
+    private fun persistAgentHistory(taskName: String, score: com.example.service.AgentServer.AgentScore) {
+        try {
+            val rec = com.example.service.AgentServer.AgentRecord(score = score, taskName = taskName)
+            val updated = (listOf(rec) + _agentHistory.value).take(20)
+            _agentHistory.value = updated
+            val arr = org.json.JSONArray()
+            for (r in updated) {
+                val o = org.json.JSONObject()
+                o.put("task", r.taskName)
+                o.put("ts", r.timestamp)
+                o.put("total", r.score.total)
+                o.put("conv", r.score.converted)
+                o.put("lead", r.score.leadConfirmed)
+                o.put("steps", r.score.steps)
+                o.put("repairs", r.score.repairs)
+                o.put("grade", r.score.grade)
+                arr.put(o)
+            }
+            prefs.edit().putString(agentHistoryKey, arr.toString()).apply()
+        } catch (_: Exception) {}
+    }
+
+    fun restoreAgentHistory() {
+        try {
+            val raw = prefs.getString(agentHistoryKey, "") ?: ""
+            if (raw.isBlank()) return
+            val arr = org.json.JSONArray(raw)
+            val list = mutableListOf<com.example.service.AgentServer.AgentRecord>()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                list.add(
+                    com.example.service.AgentServer.AgentRecord(
+                        score = com.example.service.AgentServer.AgentScore(
+                            total = o.optInt("total", 0),
+                            converted = o.optBoolean("conv", false),
+                            leadConfirmed = o.optBoolean("lead", false),
+                            steps = o.optInt("steps", 0),
+                            repairs = o.optInt("repairs", 0),
+                            grade = o.optString("grade", "F"),
+                            detailAr = ""
+                        ),
+                        taskName = o.optString("task", ""),
+                        timestamp = o.optLong("ts", 0L)
+                    )
+                )
+            }
+            _agentHistory.value = list
+        } catch (_: Exception) {}
     }
 
     /** مسار أحدث ملف سجل للتصدير والتشخيص (يُنسخ للمستخدم من شاشة Logs) */
@@ -1427,6 +1767,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             "mutations" -> s.copy(evolutionaryMutations = enabled)
             "surveillance" -> s.copy(surveillanceBlocking = enabled)
             "xhr" -> s.copy(xhrCorrection = enabled)
+            "skipconv" -> s.copy(skipConvertedTasks = enabled)
             else -> return
         }
         updateSettings(updated)
@@ -1434,6 +1775,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             "blankWall" -> "إخلاء الجدار الأبيض"
             "mutations" -> "الطفرات التطورية"
             "surveillance" -> "حظر المراقبة"
+            "skipconv" -> "تخطي المهام المحولة"
             else -> "تصحيح XHR"
         }
         addLog("info", "🔧 [مفتاح]: $label ${if (enabled) "مفعّل ✅" else "معطّل ⏸️"} (يطبق فوراً).")
@@ -1447,6 +1789,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun triggerEscapeNow() {
         SmartAutomationBrain.triggerEscapeStrategy()
         addLog("warning", "🚨 [هروب يدوي]: سيبدل العقل المسار ويعيد التحميل عند أول تحليل صفحة.")
+    }
+
+    /** استثناء تحسين البطارية: ضروري لحملات الشاشة-مطفأة الطويلة */
+    fun openBatteryExemptionSettings() {
+        try {
+            val app = getApplication<android.app.Application>()
+            val pm = app.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+            if (pm.isIgnoringBatteryOptimizations(app.packageName)) {
+                addLog("success", "🔋 [البطارية]: التطبيق مستثنى من تحسين البطارية بالفعل ✅")
+                return
+            }
+            val intent = android.content.Intent(
+                android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                android.net.Uri.parse("package:${app.packageName}")
+            ).apply { addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK) }
+            app.startActivity(intent)
+            addLog("info", "🔋 [البطارية]: فُتح طلب الاستثناء — وافق ليستمر التشغيل والشاشة مطفأة.")
+        } catch (e: Exception) {
+            addLog("warning", "🔋 تعذر فتح إعدادات البطارية: ${e.message}")
+        }
     }
 
     fun nudgeHumanization(delta: Int) {
@@ -1597,9 +1959,54 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 blankWallEviction = _settings.value.blankWallEviction
             )
             lastSmartDecision = decision
+            lastAnalysisReport = report
+            // 🤖 AI auto-fix: جولة إصلاح مفتوحة بعد كل تحليل أثناء التشغيل
+            if (_settings.value.aiAutoFix && _automationState.value.isRunning) {
+                try { runAiFixRound(manual = false) } catch (_: Exception) {}
+            }
+            // 🤖 Agent supervision: count DOM repairs + heal stuck click targets (multi-strategy finder)
+            if (agentActive()) {
+                if (decision.recoveryCommandJs != null) {
+                    agentRepairs++
+                    agentTrace("🔧 إصلاح DOM #${agentRepairs} (${decision.action.code})")
+                }
+                val target = currentState.activeClickText
+                if (!target.isNullOrBlank() && report.hasOfferClickCandidate) {
+                    if (target == agentLastTarget) agentSameTargetCount++ else {
+                        agentLastTarget = target
+                        agentSameTargetCount = 1
+                    }
+                    if (agentSameTargetCount == com.example.service.AgentServer.HEAL_AFTER_SAME_TARGET) {
+                        agentSetPhase(com.example.service.AgentServer.AgentPhase.REPAIRING)
+                        _browserCommand.value = BrowserCommand.ExecuteBrainAction(
+                            executionMode = "dom_heal",
+                            recoveryJs = com.example.service.AutomationScriptBuilder.buildDomHealerScript(target),
+                            personaFactsJson = "{}"
+                        )
+                        agentRepairs++
+                        agentTrace("🔧 حقن مُصلح DOM للهدف: '${target.take(36)}'")
+                        addLog("info", "🤖 [الوكيل]: الهدف '${target.take(36)}' عالق ${com.example.service.AgentServer.HEAL_AFTER_SAME_TARGET} تحليلات — حُقن مُصلح DOM متعدد الاستراتيجيات.", currentState.currentTaskName)
+                    }
+                } else {
+                    agentSameTargetCount = 0
+                }
+            }
             // 🧬 Sequence intelligence: طريق ميت معروف → سجل التصعيد المبكر (مرة واحدة)
             SmartAutomationBrain.SequenceIntel.consumeDeadSeqNote().takeIf { it.isNotBlank() }?.let { note ->
                 addLog("info", "🧬 [تسلسل ميت]: $note.", currentState.currentTaskName)
+            }
+            // 🚫 Wrong-page intelligence: الثانية متتالية = إجهاض التشغيل لتوفير الميزانية
+            val tid = currentState.currentTaskId
+            if (decision.executionMode == "wrong_page_evict" && tid != null) {
+                val n = (wrongPageStreak[tid] ?: 0) + 1
+                wrongPageStreak[tid] = n
+                addLog("warning", "🚫 [صفحة خاطئة #$n]: '${report.title.take(48)}' خارج الفانل — حرق المسار والتدوير.", currentState.currentTaskName)
+                if (n >= 2) {
+                    abortRunRequested = true
+                    addLog("error", "🛑 [إجهاض موفر]: صفحتان خاطئتان متتاليتان — إنهاء التشغيل فوراً بدل هدر 60 ثانية.", currentState.currentTaskName)
+                }
+            } else if (tid != null && wrongPageStreak[tid] != 0) {
+                wrongPageStreak[tid] = 0
             }
             // ⬜ Blank-wall intelligence: حرق + تدوير + تحول جوال عند التكرار
             if (_settings.value.blankWallEviction && decision.executionMode == "blank_wall_evict") {
@@ -1958,7 +2365,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             blankWallEviction = prefs.getBoolean("blankWallEviction", true),
             evolutionaryMutations = prefs.getBoolean("evolutionaryMutations", true),
             surveillanceBlocking = prefs.getBoolean("surveillanceBlocking", true),
-            xhrCorrection = prefs.getBoolean("xhrCorrection", true)
+            xhrCorrection = prefs.getBoolean("xhrCorrection", true),
+            skipConvertedTasks = prefs.getBoolean("skipConvertedTasks", false),
+            aiAutoFix = prefs.getBoolean("aiAutoFix", false)
         )
     }
 
@@ -2005,6 +2414,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             putBoolean("evolutionaryMutations", s.evolutionaryMutations)
             putBoolean("surveillanceBlocking", s.surveillanceBlocking)
             putBoolean("xhrCorrection", s.xhrCorrection)
+            putBoolean("skipConvertedTasks", s.skipConvertedTasks)
+            putBoolean("aiAutoFix", s.aiAutoFix)
             apply()
         }
     }
@@ -2521,6 +2932,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             brainMemory = SmartAutomationBrain.initialMemory()
             lastSmartDecision = null
             restoreLearning()
+            sessionTaskConversions.clear()
             selfTestDoneThisSession = false
             selfTestReloadedThisSession = false
             automationStartTime = System.currentTimeMillis()
@@ -2603,6 +3015,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
             try {
                 var loop = 0
+                var secondChanceDone = false
                 while (_automationState.value.isRunning) {
                     loop++
                     _automationState.update { it.copy(loopCount = loop) }
@@ -2621,6 +3034,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         // P0 retry guard: skip poisoned tasks after 3 failures
                         if (shouldSkipTask(rawTask.id)) {
                             addLog("warning", "⏭️ [تخطي ذكي]: ${rawTask.name} تجاوز حد الفشل ($taskRetryLimit) — تخطي مؤقت لكسر الحلقة.")
+                            continue
+                        }
+
+                        // ✅ Converted-task skip (opt-in): certified converters rest, effort shifts to laggards
+                        if (_settings.value.skipConvertedTasks && (sessionTaskConversions[rawTask.id] ?: 0) > 0) {
+                            addLog("info", "✅ [تخطي المحوَّل]: '${rawTask.name}' حوّلت هذه الجلسة — تُركت للمهام المتأخرة.")
                             continue
                         }
 
@@ -2649,7 +3068,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
                         // 🧬 Evolutionary retry: mutate ONE variable per failure (never repeat the same losing config)
                         val evolvedTask = mutateTaskForRetry(task)
-                        runSingleTask(evolvedTask)
+                        val justConverted = runSingleTask(evolvedTask)
                         persistLearning()
 
                         // 🧠 Smart adaptive wait: quality-aware human rhythm
@@ -2657,7 +3076,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             val quality = _automationState.value.sessionQualityScore
                             val minWait = _settings.value.cycleIntervalMinSec.coerceAtLeast(12)
                             val maxWait = _settings.value.cycleIntervalMaxSec.coerceAtLeast(minWait)
-                            val waitSec = SmartAutomationBrain.humanCycleInterval(minWait, maxWait, quality)
+                            var waitSec = SmartAutomationBrain.humanCycleInterval(minWait, maxWait, quality)
+                            // 🧊 Winner cooldown: conversions in bursts trigger velocity flags — cool down
+                            if (justConverted) {
+                                waitSec = (waitSec * 1.5).toInt()
+                                addLog("info", "🧊 [تهدئة الفائز]: تحويل مؤكد — الفاصل القادم ×1.5 (${waitSec} ث) ضد كشف السرعة.", task.name)
+                            }
                             for (w in waitSec downTo 1) {
                                 if (!_automationState.value.isRunning) break
                                 _automationState.update {
@@ -2677,8 +3101,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     val freshTasks = taskDao.getEnabledTasks()
                     val allDone = freshTasks.all { it.repeatCount > 0 && it.completedRuns >= it.repeatCount }
                     if (allDone) {
-                        addLog("success", "All tasks finished their repeat quota!")
-                        break
+                        // 🎯 Second-chance pass: ONE bounded retry round for tasks with zero session conversions
+                        val laggards = freshTasks.filter { (sessionTaskConversions[it.id] ?: 0) == 0 && !shouldSkipTask(it.id) }
+                        if (!secondChanceDone && laggards.isNotEmpty() && _automationState.value.isRunning) {
+                            secondChanceDone = true
+                            addLog("warning", "🎯 [فرصة ثانية]: ${laggards.size} مهام بلا تحويل هذه الجلسة (${laggards.take(3).joinToString("، ") { it.name }}) — جولة إضافية واحدة بطفرات تطورية.")
+                            // Reset their completedRuns so the next loop pass re-runs them once
+                            laggards.forEach { t ->
+                                try { taskDao.updateTask(t.copy(completedRuns = 0)) } catch (_: Exception) {}
+                            }
+                        } else {
+                            addLog("success", "All tasks finished their repeat quota!")
+                            break
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -2962,7 +3397,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun runSingleTask(task: TaskEntity) {
+    /** مُحيل التشغيل الحالي (يدور كل تكرار لفك الارتباط) */
+    private var currentRunReferer: String = "https://www.google.com/"
+
+    private suspend fun runSingleTask(task: TaskEntity): Boolean {
         taskDao.updateTaskStatus(task.id, "running")
         val currentRunNumber = task.completedRuns + 1
         val parsedCats = TaskCategoryPlanner.parseCategories(task.categories)
@@ -2971,7 +3409,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         brainMemory = SmartAutomationBrain.initialMemory()
         completionReceivedForCurrentTask = false
         currentRunTask = task
+        abortRunRequested = false
+        // 🔗 Unlinkability: referer rotates every run (default/blank only — custom referers respected)
+        val defaultRefs = listOf(
+            "https://www.google.com/", "https://www.bing.com/",
+            "https://duckduckgo.com/", "https://search.yahoo.com/", ""
+        )
+        val taskRef = task.referer.trim()
+        currentRunReferer = if (taskRef.isBlank() || taskRef == "https://www.google.com/" || taskRef == "https://www.google.com") {
+            val idx = (Math.abs(task.id.hashCode() + currentRunNumber * 31) % defaultRefs.size)
+            defaultRefs[idx].ifBlank { "https://www.google.com/" }
+        } else {
+            task.referer
+        }
         pushServiceStatus()
+        addLog(
+            "info",
+            "🔗 [فك الارتباط #$currentRunNumber]: هوية جديدة=${task.newIdentityOnRepeat} | مسح كاش=${task.clearCacheOnRepeat} | مُحيل=${currentRunReferer.hostForLog()} | بذرة جديدة=نعم",
+            task.name
+        )
         // ذكاء موزع: لاحظ طلب الهروب من المنسق (العقل يستهلكه وينفذه داخل decide)
         if (SmartAutomationBrain.peekEscapeRequest()) {
             _automationState.update { it.copy(brainExecutionMode = "alt_option_3") }
@@ -3190,7 +3646,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         // Issue browser load command on Main thread so it is never dropped or reordered with ClearCacheAndStorage
         withContext(Dispatchers.Main) {
-            _browserCommand.value = BrowserCommand.LoadUrl(task.url, task.referer, ua)
+            _browserCommand.value = BrowserCommand.LoadUrl(task.url, currentRunReferer, ua)
         }
 
         // ⏳ Inter-Stage Wait: While the page is loading/rendering in WebView -> before active human DOM interaction
@@ -3218,9 +3674,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         // 🧠 Execution based on Mode — with smart adaptive durations
         val smartCats = TaskCategoryPlanner.parseCategories(task.categories)
-        val effectiveTask = task.copy(browserDuration = SmartAutomationBrain.smartDurationForTask(task, smartCats))
+        val smartBase = SmartAutomationBrain.smartDurationForTask(task, smartCats)
+        // ⏱️ Dwell jitter ±12%: identical dwell times across repeats = velocity signal
+        val jittered = (smartBase * (0.88 + Math.random() * 0.24)).toInt().coerceAtLeast(5)
+        val effectiveTask = task.copy(browserDuration = jittered)
         if (effectiveTask.browserDuration != task.browserDuration) {
-            addLog("info", "🧠 [مدة ذكية]: عُدّلت المدة ${task.browserDuration}s → ${effectiveTask.browserDuration}s حسب تعقيد الفانل (${smartCats.size} مراحل).", task.name)
+            addLog("info", "🧠 [مدة ذكية]: عُدّلت المدة ${task.browserDuration}s → ${effectiveTask.browserDuration}s (تعقيد الفانل + تمويه ±12% ضد كشف التكرار).", task.name)
         }
         when (task.mode) {
             "mode1" -> runMode1(effectiveTask)
@@ -3276,9 +3735,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
 
-        // 🧠 Learning: record whether this run converted
+        // 🧠 Learning: record whether this run converted (callback OR brain OR thank-you URL)
         val converted = completionReceivedForCurrentTask ||
-            _automationState.value.brainNextAction == SmartAutomationBrain.NextAction.COMPLETE_CONVERSION.code
+            _automationState.value.brainNextAction == SmartAutomationBrain.NextAction.COMPLETE_CONVERSION.code ||
+            SmartAutomationBrain.isThankYouUrl(_automationState.value.currentUrl)
+        if (converted && !completionReceivedForCurrentTask &&
+            _automationState.value.brainNextAction != SmartAutomationBrain.NextAction.COMPLETE_CONVERSION.code
+        ) {
+            addLog("success", "🏆 [تحويل عبر الرابط]: ${_automationState.value.currentUrl?.take(72)} يحمل علامة صفحة نجاح.", task.name)
+        }
+        sessionTaskConversions[task.id] = (sessionTaskConversions[task.id] ?: 0) + if (converted) 1 else 0
+        // 🤖 محاسبة الوكيل: التحويلة = +100 نقطة للوكيل
+        if (converted) {
+            val ledger = aiLedgerFor(task.id)
+            ledger.converted = true
+            ledger.score += SmartAutomationBrain.AiAgent.SCORE_CONVERSION
+            aiLog("🏆 تحويل '${task.name}' — الوكيل حصل +${SmartAutomationBrain.AiAgent.SCORE_CONVERSION} (المجموع ${ledger.score})")
+            addLog("success", "🤖 [وكيل AI]: +${SmartAutomationBrain.AiAgent.SCORE_CONVERSION} نقطة لتحويل '${task.name}' (رصيد الوكيل: ${aiTotalScore()}).", task.name)
+            persistAiLedger()
+        }
         SmartAutomationBrain.recordOutcome(taskLearning, task.id, converted)
         // ذكاء التسلسلات: سجل طريق هذه المحاولة (رابح/خاسر) ليتجنبه العقل مستقبلاً
         try {
@@ -3347,8 +3822,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         addLog(if (converted) "success" else "info", "🧠 [تعلم]: ${task.name} → تحويل=${if (converted) "نعم ✅" else "لا"} | معدل النجاح التراكمي: $rate% (${taskLearning[task.id]?.runs} runs)", task.name)
+        if (!converted) {
+            addLog("warning", "🔍 [تشريح الفشل]: ${autopsyReport()}", task.name)
+        }
         if (currentRunTask?.id == task.id) currentRunTask = null
         pushServiceStatus()
+        return converted
     }
 
     private suspend fun runMode1(task: TaskEntity) {
@@ -3359,6 +3838,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             // 🧠 Early smart exit: conversion already confirmed → don't waste time
             if (completionReceivedForCurrentTask) {
                 addLog("success", "🧠 [خروج مبكر ذكي]: تم التحويل المؤكد — إنهاء العدّاد (${remainingSec}s متبقية) فوراً.", task.name)
+                break
+            }
+            // 🛑 Budget abort: wrong-page eviction ×2 → stop dwelling immediately
+            if (abortRunRequested) {
+                addLog("warning", "🛑 [إجهاض]: إيقاف العدّاد (${remainingSec}s متبقية) — صفحة خارج المهمة.", task.name)
                 break
             }
             // ⏱️🧠 Adaptive Time Extension: if actively progressing through survey/form/locker steps and time is running low, grant +15s (up to 2 times)
@@ -3394,17 +3878,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val durationPerRepeat = (task.taskDuration / repeats).coerceAtLeast(5)
 
         for (r in 1..repeats) {
-            if (!_automationState.value.isRunning) break
+            if (!_automationState.value.isRunning || abortRunRequested) break
             if (completionReceivedForCurrentTask) {
                 addLog("success", "🧠 [خروج مبكر]: تحويل مؤكد في التكرار $r — تخطي الباقي.", task.name)
                 break
             }
             if (r > 1) {
                 addLog("info", "Mode 2 repeat #$r: Reloading task in same session", task.name)
-                _browserCommand.value = BrowserCommand.LoadUrl(task.url, task.referer, ua)
+                _browserCommand.value = BrowserCommand.LoadUrl(task.url, currentRunReferer, ua)
             }
             for (sec in durationPerRepeat downTo 1) {
-                if (!_automationState.value.isRunning || completionReceivedForCurrentTask) break
+                if (!_automationState.value.isRunning || completionReceivedForCurrentTask || abortRunRequested) break
                 val brainHint = _automationState.value.smartDecisionTitle.takeIf { it.isNotBlank() }?.let { " | 🧠 $it" } ?: ""
                 _automationState.update {
                     it.copy(
@@ -3425,7 +3909,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         addLog("info", "🧠 Mode 3 smart listening (${keywords.size} إشارة): ${keywords.take(5).joinToString(", ")}", task.name)
 
         for (sec in 1..maxWaitSec) {
-            if (!_automationState.value.isRunning || completionReceivedForCurrentTask) break
+            if (!_automationState.value.isRunning || completionReceivedForCurrentTask || abortRunRequested) break
             // 🧠 If brain already decided COMPLETE, exit even before bridge callback
             if (_automationState.value.brainNextAction == SmartAutomationBrain.NextAction.COMPLETE_CONVERSION.code) {
                 completionReceivedForCurrentTask = true
@@ -3500,6 +3984,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onMidPageInfoExtracted(extractedKey: String, extractedValue: String) {
         _automationState.update { it.copy(lastExtractedMidPageText = "$extractedKey -> $extractedValue") }
+        // 🤖 DOM-heal verdict: found+clicked counts as an agent repair (ledger + console + trace)
+        if (extractedKey == "dom_heal") {
+            try {
+                val wrapped = "[${extractedValue}]"
+                val decoded = try {
+                    org.json.JSONArray(wrapped).optString(0, "")
+                } catch (_: Exception) { "" }
+                val obj = try { org.json.JSONObject(decoded) } catch (_: Exception) { null }
+                val found = obj?.optBoolean("found", false) == true
+                val clicked = obj?.optBoolean("clicked", false) == true
+                val strategy = obj?.optString("strategy", "none").orEmpty()
+                val info = obj?.optString("info", "").orEmpty().take(48)
+                if (found) {
+                    agentRepairs++
+                    agentTrace("✅ المُصلح وجد الهدف ($strategy): '$info'")
+                }
+                val tid = _automationState.value.currentTaskId ?: "manual"
+                val ledger = aiLedgerFor(tid)
+                if (found && clicked) {
+                    ledger.fixesOk++
+                    ledger.score += SmartAutomationBrain.AiAgent.SCORE_FIX_OK
+                    aiLog("✅ [dom_heal] نقر الهدف ($strategy): '$info' (+${SmartAutomationBrain.AiAgent.SCORE_FIX_OK})")
+                } else {
+                    ledger.fixesFail++
+                    aiLog("❌ [dom_heal] لم يُعثر على الهدف ($strategy): '$info' — سيجرب البديل.")
+                }
+                persistAiLedger()
+            } catch (_: Exception) {}
+        }
         addLog("info", "🧠 [استخراج ذكي وتكيّف]: استخراج: '$extractedKey' | الإجابة: '$extractedValue'")
         // Expert: auto-learn unseen locker offers as disabled suggestions (user enables the winners)
         if (extractedKey == "locker_offers_available" || extractedKey == "locker_offers_matched") {
@@ -3594,6 +4107,7 @@ sealed class BrowserCommand {
     data class ExecuteWorkTemplate(val stepsJson: String) : BrowserCommand()
     data class OpenInNewTab(val url: String, val title: String = "Offer") : BrowserCommand()
     data class RunShieldSelfTest(val script: String) : BrowserCommand()
+    data class ExecuteAiFix(val script: String, val fixId: String) : BrowserCommand()
     object ScanAndExtractLockerOffers : BrowserCommand()
     data class ExecuteBrainAction(
         val executionMode: String,

@@ -2072,6 +2072,209 @@ true;
     }
 
     /**
+     * AI Fix Library — كود مفتوح يصلح مشاكل DOM: كل إصلاح يُرجع JSON كنتيجة
+     * {fix, ok, detail} يقرأها الأصلي عبر ValueCallback للحكم والتكرار.
+     */
+    fun buildAiFixScript(fixKey: String): String {
+        val core = """
+(function() {
+  var R = { fix: '$fixKey', ok: false, detail: '' };
+  try {
+    var done = (@FIX_BODY@);
+    R.ok = done.ok;
+    R.detail = done.detail;
+  } catch(e) { R.detail = 'throw:' + String(e && e.message || e).slice(0, 80); }
+  return JSON.stringify(R);
+})();
+        """.trimIndent()
+        val body = when (fixKey) {
+            "unhide-cta" -> """
+                var n = 0;
+                var els = document.querySelectorAll('button, a, [role=button], input[type=submit], input[type=button]');
+                for (var i = 0; i < els.length; i++) {
+                  var el = els[i];
+                  try {
+                    var cs = window.getComputedStyle(el);
+                    if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') {
+                      el.style.setProperty('display', '', 'important');
+                      el.style.setProperty('visibility', 'visible', 'important');
+                      el.style.setProperty('opacity', '1', 'important');
+                      n++;
+                    }
+                    el.style.setProperty('pointer-events', 'auto', 'important');
+                  } catch(e) {}
+                }
+                ({ ok: n > 0, detail: 'unhidden_cta=' + n });
+            """.trimIndent()
+            "kill-overlay" -> """
+                var n = 0;
+                var vw = window.innerWidth || 400, vh = window.innerHeight || 700;
+                var els = document.querySelectorAll('body div');
+                for (var i = 0; i < els.length; i++) {
+                  var el = els[i];
+                  try {
+                    var cs = window.getComputedStyle(el);
+                    if ((cs.position !== 'fixed' && cs.position !== 'sticky') || el.querySelector('input, button, a[href]')) continue;
+                    var r = el.getBoundingClientRect();
+                    if (r.width * r.height < vw * vh * 0.6) continue;
+                    var txt = (el.innerText || '').toLowerCase();
+                    if (txt.indexOf('locker') !== -1 || txt.indexOf('offer') !== -1 || txt.indexOf('لوكر') !== -1 || txt.indexOf('verify') !== -1) continue;
+                    el.parentNode.removeChild(el);
+                    n++;
+                  } catch(e) {}
+                }
+                ({ ok: n > 0, detail: 'removed_overlays=' + n });
+            """.trimIndent()
+            "banner-dismiss" -> """
+                var n = 0;
+                var sels = ['[id*=cookie i] button', '[class*=cookie i] button', '[id*=consent i] button', '[class*=consent i] button', '[id*=onetrust-accept]', '.onetrust-close-btn-handler', '#accept-cookies', '.accept-cookies'];
+                for (var i = 0; i < sels.length; i++) {
+                  try {
+                    var btns = document.querySelectorAll(sels[i]);
+                    for (var j = 0; j < btns.length; j++) {
+                      if (btns[j].offsetParent !== null) { btns[j].click(); n++; break; }
+                    }
+                    if (n > 0) break;
+                  } catch(e) {}
+                }
+                ({ ok: n > 0, detail: 'dismissed_banners=' + n });
+            """.trimIndent()
+            "zfix-cta" -> """
+                var n = 0;
+                var els = document.querySelectorAll('button, a[href], input[type=submit]');
+                for (var i = 0; i < els.length; i++) {
+                  var el = els[i], p = el, d = 0;
+                  try {
+                    while (p && p !== document.body && d < 4) {
+                      var cs = window.getComputedStyle(p);
+                      if (cs.pointerEvents === 'none') { p.style.setProperty('pointer-events', 'auto', 'important'); n++; }
+                      p = p.parentElement; d++;
+                    }
+                  } catch(e) {}
+                }
+                ({ ok: n > 0, detail: 'pointer_fixed=' + n });
+            """.trimIndent()
+            else -> """
+                var n = 0;
+                var els = document.querySelectorAll('input[disabled], button[disabled], select[disabled], textarea[disabled]');
+                for (var i = 0; i < els.length; i++) {
+                  try {
+                    if (els[i].type === 'hidden') continue;
+                    els[i].removeAttribute('disabled');
+                    n++;
+                  } catch(e) {}
+                }
+                ({ ok: n > 0, detail: 'enabled_fields=' + n });
+            """.trimIndent()
+        }
+        return core.replace("@FIX_BODY@", body)
+    }
+
+    /**
+     * DOM Healer — إصلاح DOM ذاتي: عندما يفشل المحدد الأصلي، يجرب استراتيجيات
+     * بديلة (نص دقيق ← جزئي ← aria ← أقرب عنصر قابل للنقر ← أول CTA مرئي)
+     * وينقر الهدف إن وجد، ويُبلغ عبر onMidPageInfoExtracted("dom_heal", JSON).
+     */
+    fun buildDomHealerScript(targetText: String): String {
+        val want = targetText.trim().replace("\\", "\\\\").replace("'", "\\'").take(120)
+        return """
+(function() {
+  var WANT = '$want'.toLowerCase();
+  var result = { found: false, strategy: 'none', clicked: false, info: '' };
+  function vis(el) {
+    try {
+      if (!el || !el.getBoundingClientRect) return false;
+      var r = el.getBoundingClientRect();
+      if (r.width < 4 || r.height < 4) return false;
+      var st = window.getComputedStyle(el);
+      if (st && (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity || '1') < 0.1)) return false;
+      return true;
+    } catch(e) { return false; }
+  }
+  function txt(el) { try { return ((el.innerText || el.textContent || '') + '').trim(); } catch(e) { return ''; } }
+  function tryClick(el, strategy) {
+    try {
+      if (!el || !vis(el)) return false;
+      result.found = true;
+      result.strategy = strategy;
+      result.info = txt(el).slice(0, 60);
+      try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch(e) {}
+      setTimeout(function() {
+        try {
+          var r = el.getBoundingClientRect();
+          var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+          ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(function(t) {
+            try { el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy })); } catch(e) {}
+          });
+          result.clicked = true;
+          report();
+        } catch(e) { report(); }
+      }, 350);
+      return true;
+    } catch(e) { return false; }
+  }
+  function report() {
+    try {
+      if (window.AndroidBridge && window.AndroidBridge.onMidPageInfoExtracted) {
+        window.AndroidBridge.onMidPageInfoExtracted('dom_heal', JSON.stringify(result));
+      }
+    } catch(e) {}
+  }
+  try {
+    if (!WANT) { result.info = 'empty-target'; report(); return 'heal_empty'; }
+    var cands = Array.prototype.slice.call(document.querySelectorAll('a, button, [role="button"], input[type="submit"], input[type="button"], [onclick]'));
+    var i, t;
+    // 1) exact text
+    for (i = 0; i < cands.length; i++) { t = txt(cands[i]).toLowerCase(); if (t && t === WANT) { if (tryClick(cands[i], 'exact-text')) return 'heal_exact'; } }
+    // 2) contains (target inside element OR element inside target, min 4 chars overlap)
+    for (i = 0; i < cands.length; i++) {
+      t = txt(cands[i]).toLowerCase();
+      if (t && (t.indexOf(WANT) !== -1 || (WANT.length >= 4 && WANT.indexOf(t) !== -1))) { if (tryClick(cands[i], 'partial-text')) return 'heal_partial'; }
+    }
+    // 3) aria-label / title / value
+    var aria = Array.prototype.slice.call(document.querySelectorAll('[aria-label], [title], input[value]'));
+    for (i = 0; i < aria.length; i++) {
+      var a = ((aria[i].getAttribute('aria-label') || aria[i].getAttribute('title') || aria[i].value || '') + '').toLowerCase();
+      if (a && (a.indexOf(WANT) !== -1 || WANT.indexOf(a) !== -1)) { if (tryClick(aria[i], 'aria-label')) return 'heal_aria'; }
+    }
+    // 4) nearest clickable ancestor of any text match
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+    var node;
+    while (node = walker.nextNode()) {
+      var v = (node.nodeValue || '').toLowerCase();
+      if (v && WANT.length >= 4 && v.indexOf(WANT.slice(0, Math.min(WANT.length, 12))) !== -1) {
+        var p = node.parentElement;
+        for (var d = 0; d < 4 && p; d++) {
+          if (/^(A|BUTTON)$/.test(p.tagName) || p.getAttribute('role') === 'button' || p.onclick) {
+            if (tryClick(p, 'ancestor')) return 'heal_ancestor';
+          }
+          p = p.parentElement;
+        }
+      }
+    }
+    // 5) first visible primary CTA as last resort
+    var fallbacks = ['continue', 'next', 'submit', 'claim', 'start', 'verify', 'متابعة', 'استمرار', 'تأكيد'];
+    var all = Array.prototype.slice.call(document.querySelectorAll('a, button'));
+    outer:
+    for (var f = 0; f < fallbacks.length; f++) {
+      for (var k = 0; k < all.length; k++) {
+        if (txt(all[k]).toLowerCase().indexOf(fallbacks[f]) !== -1) {
+          if (tryClick(all[k], 'fallback-cta:' + fallbacks[f])) break outer;
+        }
+      }
+    }
+    if (!result.found) { result.info = 'not-found'; report(); }
+    return 'heal_done';
+  } catch(e) {
+    result.info = 'throw:' + String(e && e.message || e).slice(0, 50);
+    report();
+    return 'heal_error';
+  }
+})();
+        """.trimIndent()
+    }
+
+    /**
      * Shield Self-Test — تدقيق ذاتي: يقرأ القيم المرصودة فعلياً (كأي موقع فاحص)
      * ويقارنها بالمتوقع، ويخزن النتيجة في window.__cpaSelfTestResult.
      * الأصلي يقرأها بعد ~2.5 ثانية (فحوص غير متزامنة: أصوات/تخزين/لوحة/بطارية).
@@ -3931,7 +4134,35 @@ true;
         break;
       }
     }
+    // Thank-you URL fallback: conversion pages sometimes render late/empty of keywords
+    if (!completionReported) {
+      var u = (window.location.href || '').toLowerCase();
+      var urlBits = ['/thank', 'thank-you', 'thankyou', '/success', 'confirmation', 'order-received', 'order-confirm', '/receipt', 'signup-success', 'register-success', 'payment-success', 'checkout-success', 'survey-success', '/finish', 'lead-success'];
+      for (var j = 0; j < urlBits.length; j++) {
+        if (u.indexOf(urlBits[j]) !== -1) {
+          completionReported = true;
+          if (window.AndroidBridge && window.AndroidBridge.onTaskCompleted) {
+            window.AndroidBridge.onTaskCompleted('url:' + urlBits[j], window.location.href);
+          }
+          break;
+        }
+      }
+    }
   }
+
+  // Re-arm on SPA navigations (same-document URL changes must re-evaluate)
+  function rearmCompletion() {
+    completionReported = false;
+    setTimeout(checkCompletion, 900);
+  }
+  try {
+    var __cpaOrigPush = history.pushState;
+    history.pushState = function() { var r = __cpaOrigPush.apply(this, arguments); setTimeout(rearmCompletion, 400); return r; };
+    var __cpaOrigReplace = history.replaceState;
+    history.replaceState = function() { var r = __cpaOrigReplace.apply(this, arguments); setTimeout(rearmCompletion, 400); return r; };
+  } catch(e) {}
+  window.addEventListener('popstate', function() { setTimeout(rearmCompletion, 400); });
+  window.addEventListener('hashchange', function() { setTimeout(rearmCompletion, 400); });
 
   setTimeout(checkCompletion, 1800);
   window.addEventListener('load', function() { setTimeout(checkCompletion, 1200); });

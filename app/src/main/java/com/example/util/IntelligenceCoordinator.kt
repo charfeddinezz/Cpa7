@@ -321,6 +321,10 @@ class IntelligenceCoordinator(
         }
     }
 
+    fun addAnomalies(n: Int) {
+        if (n > 0) sessionAnomalyCount += n
+    }
+
     fun setActive(active: Boolean) {
         activeMode = active
         if (active) {

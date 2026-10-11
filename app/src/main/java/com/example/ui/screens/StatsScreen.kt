@@ -119,6 +119,119 @@ fun StatsScreen(
             }
         }
 
+        // Conversion intelligence: by country (where do leads convert?)
+        if (stats.isNotEmpty()) {
+            item {
+                val byCountry = stats.groupBy { it.country.ifBlank { "??" } }
+                    .mapValues { (_, rows) ->
+                        Triple(rows.size, rows.count { it.leadDetected }, if (rows.isNotEmpty()) rows.count { it.leadDetected }.toDouble() / rows.size else 0.0)
+                    }
+                    .toList()
+                    .sortedByDescending { it.second.first }
+                    .take(6)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(CpaCard)
+                        .border(1.dp, CpaBorder, RoundedCornerShape(10.dp))
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "CONVERSION BY COUNTRY",
+                        color = CpaPrimary,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.8.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    byCountry.forEach { (country, triple) ->
+                        val (runs, leads, rate) = triple
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = country,
+                                color = CpaText,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "$leads/$runs · ${(rate * 100).toInt()}%",
+                                color = if (rate >= 0.5 && runs >= 2) CpaSuccess else CpaTextMuted,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Conversion intelligence: by task (which offers convert?)
+        if (stats.isNotEmpty()) {
+            item {
+                val byTask = stats.groupBy { it.taskId }
+                    .mapValues { (_, rows) ->
+                        Triple(rows.size, rows.count { it.leadDetected }, if (rows.isNotEmpty()) rows.count { it.leadDetected }.toDouble() / rows.size else 0.0)
+                    }
+                    .toList()
+                    .sortedByDescending { it.second.first }
+                    .take(8)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(CpaCard)
+                        .border(1.dp, CpaBorder, RoundedCornerShape(10.dp))
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "CONVERSION BY TASK",
+                        color = CpaPrimary,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.8.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    byTask.forEach { (taskId, triple) ->
+                        val (runs, leads, rate) = triple
+                        val name = tasks.firstOrNull { it.id == taskId }?.name ?: taskId.take(12)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = name,
+                                color = CpaText,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "$leads/$runs · ${(rate * 100).toInt()}%",
+                                color = if (rate >= 0.5 && runs >= 2) CpaSuccess else CpaTextMuted,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         // Action: Reset Stats
         if (stats.isNotEmpty()) {
             item {

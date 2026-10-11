@@ -1,0 +1,106 @@
+{
+  "task": "https://singingfiles.com/show.php?l=0&u=2214761&id=75233",
+  "ip": "",
+  "verdict": "NOT_CONVERTED_BUDGET_SPENT",
+  "attempts": [
+    {
+      "attempt": 1,
+      "referer": "https://www.google.com/",
+      "exit_ip": "216.26.231.36",
+      "result": {
+        "converted": false,
+        "reason": "BLANK_WALL",
+        "hops": [
+          {
+            "n": 1,
+            "url": "https://singingfiles.com/show.php?l=0&u=2214761&id=75233",
+            "status": 200,
+            "bytes": 1051,
+            "error": ""
+          },
+          {
+            "n": 2,
+            "url": "https://send.appntrckrt.com/click?pid=100&offer_id=32558&sub6=1324353775&sub2=100_2214761&sub7=2214761",
+            "status": 200,
+            "bytes": 267,
+            "error": ""
+          },
+          {
+            "n": 3,
+            "url": "https://secure.amtrack01.com/aff_r?offer_id=887&aff_id=1897&redirect_pass=1&url=https%3A%2F%2Fnielsenpulse.com%2F%3Fcampid%3Darr02-3dKOStnL7Z5G%26transid%3D10236d821566a9436a9d7bec2289cd&urlauth=735157470667143712639192792243",
+            "status": 200,
+            "bytes": 0,
+            "error": ""
+          }
+        ],
+        "rss_lead": false
+      }
+    },
+    {
+      "attempt": 2,
+      "referer": "https://www.bing.com/",
+      "exit_ip": "209.50.170.164",
+      "result": {
+        "converted": false,
+        "reason": "BLANK_WALL",
+        "hops": [
+          {
+            "n": 1,
+            "url": "https://singingfiles.com/show.php?l=0&u=2214761&id=75233",
+            "status": 200,
+            "bytes": 1051,
+            "error": ""
+          },
+          {
+            "n": 2,
+            "url": "https://send.appntrckrt.com/click?pid=100&offer_id=32558&sub6=1324353796&sub2=100_2214761&sub7=2214761",
+            "status": 200,
+            "bytes": 267,
+            "error": ""
+          },
+          {
+            "n": 3,
+            "url": "https://secure.amtrack01.com/aff_r?offer_id=887&aff_id=1897&redirect_pass=1&url=https%3A%2F%2Fnielsenpulse.com%2F%3Fcampid%3Darr02-3dKOStnL7Z5G%26transid%3D102bc7a4b08a905b2b9681748ccd86&urlauth=869254161342819558089511771851",
+            "status": 200,
+            "bytes": 0,
+            "error": ""
+          }
+        ],
+        "rss_lead": false
+      }
+    },
+    {
+      "attempt": 3,
+      "referer": "https://duckduckgo.com/",
+      "exit_ip": "209.50.166.206",
+      "result": {
+        "converted": false,
+        "reason": "BLANK_WALL",
+        "hops": [
+          {
+            "n": 1,
+            "url": "https://singingfiles.com/show.php?l=0&u=2214761&id=75233",
+            "status": 200,
+            "bytes": 1051,
+            "error": ""
+          },
+          {
+            "n": 2,
+            "url": "https://send.appntrckrt.com/click?pid=100&offer_id=32558&sub6=1324353820&sub2=100_2214761&sub7=2214761",
+            "status": 200,
+            "bytes": 267,
+            "error": ""
+          },
+          {
+            "n": 3,
+            "url": "https://secure.amtrack01.com/aff_r?offer_id=887&aff_id=1897&redirect_pass=1&url=https%3A%2F%2Fnielsenpulse.com%2F%3Fcampid%3Darr02-3dKOStnL7Z5G%26transid%3D1021a1e19060b09eb126598b93e698&urlauth=630793916862857362494249327568",
+            "status": 200,
+            "bytes": 0,
+            "error": ""
+          }
+        ],
+        "rss_lead": false
+      }
+    }
+  ]
+}

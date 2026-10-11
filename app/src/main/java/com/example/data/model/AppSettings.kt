@@ -44,5 +44,7 @@ data class AppSettings(
     val blankWallEviction: Boolean = true, // كشف الجدار الأبيض وإخلاؤه
     val evolutionaryMutations: Boolean = true, // الطفرات التطورية عند الفشل
     val surveillanceBlocking: Boolean = true, // حظر متتبعات إعادة الجلسات
-    val xhrCorrection: Boolean = true // تصحيح ترويسات XHR/fetch
+    val xhrCorrection: Boolean = true, // تصحيح ترويسات XHR/fetch
+    val skipConvertedTasks: Boolean = false, // تخطي المهام المحولة هذه الجلسة (تركيز الجهد على المتأخرة)
+    val aiAutoFix: Boolean = false // الوكيل المفتوح يصلح DOM تلقائياً كل تحليل صفحة
 )

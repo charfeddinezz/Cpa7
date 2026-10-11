@@ -73,6 +73,7 @@ fun ShieldScreen(
     onTriggerEscape: () -> Unit,
     onNudgeHumanization: (Int) -> Unit,
     onSetKillSwitch: (String, Boolean) -> Unit,
+    onBatteryExemption: () -> Unit,
     statsProvider: () -> AppViewModel.ShieldStats,
     modifier: Modifier = Modifier
 ) {
@@ -220,6 +221,8 @@ fun ShieldScreen(
                 InfoRow("Site Fingerprinting", "${stats.lastShieldScore} pts", isMonospace = true)
                 Spacer(modifier = Modifier.height(8.dp))
                 ActionButton("🔄 تدوير البروكسي الآن", CpaCard, CpaPrimary, border = CpaPrimaryBorder) { onRotateProxy() }
+                Spacer(modifier = Modifier.height(6.dp))
+                ActionButton("🔋 استثناء البطارية (للحملات الطويلة)", CpaCard, CpaPrimary, border = CpaPrimaryBorder) { onBatteryExemption() }
             }
         }
 
@@ -230,6 +233,7 @@ fun ShieldScreen(
                 KillRow("الطفرات التطورية", settings.evolutionaryMutations) { onSetKillSwitch("mutations", it) }
                 KillRow("حظر المراقبة", settings.surveillanceBlocking) { onSetKillSwitch("surveillance", it) }
                 KillRow("تصحيح XHR", settings.xhrCorrection) { onSetKillSwitch("xhr", it) }
+                KillRow("تخطي المهام المحولة ✅", settings.skipConvertedTasks) { onSetKillSwitch("skipconv", it) }
             }
         }
 

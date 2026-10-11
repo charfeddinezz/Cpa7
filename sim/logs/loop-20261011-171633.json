@@ -1,0 +1,88 @@
+{
+  "task": "https://singingfiles.com/show.php?l=0&u=2214761&id=75158",
+  "ip": "",
+  "verdict": "NOT_CONVERTED_BUDGET_SPENT",
+  "attempts": [
+    {
+      "attempt": 1,
+      "referer": "https://www.google.com/",
+      "exit_ip": "208.207.139.157",
+      "result": {
+        "converted": false,
+        "reason": "NEEDS_BROWSER_INTERACTION",
+        "hops": [
+          {
+            "n": 1,
+            "url": "https://singingfiles.com/show.php?l=0&u=2214761&id=75158",
+            "status": 200,
+            "bytes": 1015,
+            "error": ""
+          },
+          {
+            "n": 2,
+            "url": "https://fly.swiftfalconsmobi.com/click?pid=701&offer_id=97264&sub1=1324352924&sub5=2214761",
+            "status": 200,
+            "bytes": 196752,
+            "error": ""
+          }
+        ],
+        "final_url": "https://www.aarp.org/membership/lp/444-bc5-calc-faq-hero-simple-wm/?irgwc=1&afsrc=1&s3=whLX2XQnixyZWW5RIN2TNzmdUkr1yh0Lk",
+        "rss_lead": false
+      }
+    },
+    {
+      "attempt": 2,
+      "referer": "https://www.bing.com/",
+      "exit_ip": "78.105.98.244",
+      "result": {
+        "converted": false,
+        "reason": "NEEDS_BROWSER_INTERACTION",
+        "hops": [
+          {
+            "n": 1,
+            "url": "https://singingfiles.com/show.php?l=0&u=2214761&id=75158",
+            "status": 200,
+            "bytes": 1015,
+            "error": ""
+          },
+          {
+            "n": 2,
+            "url": "https://fly.swiftfalconsmobi.com/click?pid=701&offer_id=97264&sub1=1324352957&sub5=2214761",
+            "status": 200,
+            "bytes": 196752,
+            "error": ""
+          }
+        ],
+        "final_url": "https://www.aarp.org/membership/lp/444-bc5-calc-faq-hero-simple-wm/?irgwc=1&afsrc=1&s3=19K2tVQnixyZRzqSPaxT6Rs5Ukr1yhzpX",
+        "rss_lead": false
+      }
+    },
+    {
+      "attempt": 3,
+      "referer": "https://duckduckgo.com/",
+      "exit_ip": "216.26.232.118",
+      "result": {
+        "converted": false,
+        "reason": "NEEDS_BROWSER_INTERACTION",
+        "hops": [
+          {
+            "n": 1,
+            "url": "https://singingfiles.com/show.php?l=0&u=2214761&id=75158",
+            "status": 200,
+            "bytes": 1015,
+            "error": ""
+          },
+          {
+            "n": 2,
+            "url": "https://fly.swiftfalconsmobi.com/click?pid=701&offer_id=97264&sub1=1324352980&sub5=2214761",
+            "status": 200,
+            "bytes": 196752,
+            "error": ""
+          }
+        ],
+        "final_url": "https://www.aarp.org/membership/lp/444-bc5-calc-faq-hero-simple-wm/?irgwc=1&afsrc=1&s3=U26XsQQnixyZWW5RIN2TNzmdUkr1yhyzE",
+        "rss_lead": false
+      }
+    }
+  ]
+}

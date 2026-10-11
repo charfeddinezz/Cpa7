@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.ListAlt
 import androidx.compose.material.icons.filled.Router
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Terminal
@@ -60,6 +61,7 @@ fun MainNavigation(
         Pair(ScreenTab.TASKS, Icons.Default.ListAlt),
         Pair(ScreenTab.BROWSER, Icons.Default.Language),
         Pair(ScreenTab.SHIELD, Icons.Default.Shield),
+        Pair(ScreenTab.AI, Icons.Default.Psychology),
         Pair(ScreenTab.TEMPLATES, Icons.Default.Build),
         Pair(ScreenTab.CLICK, Icons.Default.TouchApp),
         Pair(ScreenTab.INFO, Icons.Default.Badge),

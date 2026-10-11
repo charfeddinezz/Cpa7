@@ -21,3 +21,6 @@ debug.keystore
 *.apk
 *.aab
 *.zip
+
+# Live proxy credentials (session-local, never commit)
+sim/working_proxies.json

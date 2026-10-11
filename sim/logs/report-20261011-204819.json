@@ -1,0 +1,48 @@
+{
+  "task": "https://singingfiles.com/show.php?l=0&u=2214761&id=75158",
+  "plan": "Singingfiles #75158",
+  "hops": [
+    {
+      "n": 1,
+      "url": "https://singingfiles.com/show.php?l=0&u=2214761&id=75158",
+      "status": 200,
+      "bytes": 684,
+      "ms": 235,
+      "error": ""
+    },
+    {
+      "n": 2,
+      "url": "https://send.appntrckrt.com/click?pid=100&offer_id=20404&sub6=1324352167&sub2=100_2214761&sub7=2214761",
+      "status": 204,
+      "bytes": 0,
+      "ms": 225,
+      "error": ""
+    },
+    {
+      "n": 3,
+      "url": "https://g6dev.com/link?z=10140422&var=100_2214761&ymid=6acbf612e469fe00016206d8",
+      "status": 204,
+      "bytes": 0,
+      "ms": 40,
+      "error": ""
+    }
+  ],
+  "analysis": {
+    "title": "",
+    "text_len": 0,
+    "emails": 0,
+    "tels": 0,
+    "texts": 0,
+    "pwds": 0,
+    "radios": 0,
+    "checks": 0,
+    "buttons": 0,
+    "cta": "",
+    "blank": true,
+    "captcha": false,
+    "locker": false,
+    "kw_hits": [],
+    "thankyou_url": false
+  },
+  "verdict": "BLANK_WALL"
+}

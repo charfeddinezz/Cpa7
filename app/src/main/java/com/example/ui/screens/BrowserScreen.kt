@@ -58,6 +58,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -293,6 +294,9 @@ fun BrowserScreen(
     onShieldSelfTestResult: ((String) -> Unit)? = null,
     onIsHostileHost: ((String) -> Boolean)? = null,
     onSurveillanceBlocked: ((String) -> Unit)? = null,
+    onWebViewRendererGone: ((String, Boolean, String, Boolean) -> Unit)? = null,
+    onConsoleError: ((String) -> Unit)? = null,
+    onAiFixResult: ((String, String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -314,9 +318,40 @@ fun BrowserScreen(
     var showToolsDrawer by remember { mutableStateOf(false) }
     var showLockerHarvestBanner by remember { mutableStateOf(false) }
     var isScanningLocker by remember { mutableStateOf(false) }
+    var lastConsoleLogMs by remember { mutableStateOf(0L) }
     var lockerScanRequestedUntil by remember { mutableStateOf(0L) }
     var retriedEmptyTrackerUrl by remember { mutableStateOf("") }
     var retriedProxyUrl by remember { mutableStateOf("") }
+    // Renderer crash generations: bumping a tab's generation recreates only its WebView
+    var crashGen by remember { mutableStateOf(mapOf<String, Int>()) }
+
+    fun handleRendererGone(tabItem: BrowserTabModel, didCrash: Boolean) {
+        // State mutation + destroy must happen on the main thread (callback thread varies)
+        val runner = tabItem.webView
+        val runOnUi: (() -> Unit) -> Unit = { block ->
+            try {
+                if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) block()
+                else runner?.post { block() } ?: android.os.Handler(android.os.Looper.getMainLooper()).post { block() }
+            } catch (_: Exception) {
+                try { block() } catch (_: Exception) {}
+            }
+        }
+        runOnUi {
+            val gen = (crashGen[tabItem.id] ?: 0) + 1
+            if (gen > 3) {
+                onWebViewRendererGone?.invoke(tabItem.id, didCrash, tabItem.url, true)
+                return@runOnUi
+            }
+            try {
+                val dead = tabItem.webView
+                tabItem.webView = null
+                try { dead?.stopLoading() } catch (_: Exception) {}
+                try { dead?.destroy() } catch (_: Exception) {}
+            } catch (_: Exception) {}
+            crashGen = crashGen + (tabItem.id to gen)
+            onWebViewRendererGone?.invoke(tabItem.id, didCrash, tabItem.url, false)
+        }
+    }
 
     val triggerLockerScanAndHarvest: () -> Unit = {
         val wv = activeTab.webView
@@ -788,6 +823,18 @@ fun BrowserScreen(
                         AutomationScriptBuilder.buildAutoTemplateGeneratorScript(),
                         null
                     )
+                }
+                is BrowserCommand.ExecuteAiFix -> {
+                    activeTab.webView?.let { wv ->
+                        try {
+                            wv.evaluateJavascript(
+                                cmd.script,
+                                android.webkit.ValueCallback<String?> { v ->
+                                    onAiFixResult?.invoke(cmd.fixId, v.orEmpty())
+                                }
+                            )
+                        } catch (_: Exception) {}
+                    }
                 }
                 is BrowserCommand.RunShieldSelfTest -> {
                     activeTab.webView?.let { wv ->
@@ -1484,9 +1531,12 @@ fun BrowserScreen(
                             translationY = if (isThisTabActive) 0f else 99999f
                         }
                 ) {
+                    key(tabItem.id, crashGen[tabItem.id] ?: 0) {
                     AndroidView(
                         factory = { ctx ->
                             WebView(ctx).apply {
+                                // NOTE: tab URL restore on recreate is handled at the end of
+                                // factory (loadUrlSmart) — crashed tabs reload automatically.
                                 tabItem.webView = this
                                 setLayerType(View.LAYER_TYPE_HARDWARE, null)
                                 this.settings.apply {
@@ -1505,8 +1555,31 @@ fun BrowserScreen(
                                     setGeolocationEnabled(true)
                                     allowFileAccess = false
                                     allowContentAccess = false
+                                    @Suppress("DEPRECATION")
+                                    allowFileAccessFromFileURLs = false
+                                    @Suppress("DEPRECATION")
+                                    allowUniversalAccessFromFileURLs = false
                                     mediaPlaybackRequiresUserGesture = false
                                 }
+
+                                // Install-offer downloads behave like a real browser (system DownloadManager)
+                                try {
+                                    setDownloadListener { url, _, contentDisposition, mimeType, _ ->
+                                        try {
+                                            val fileName = android.webkit.URLUtil.guessFileName(url, contentDisposition, mimeType)
+                                            val req = android.app.DownloadManager.Request(android.net.Uri.parse(url)).apply {
+                                                setTitle(fileName)
+                                                setDescription("Offer download via Smart Automator")
+                                                setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                                                setMimeType(mimeType)
+                                                setDestinationInExternalFilesDir(context, android.os.Environment.DIRECTORY_DOWNLOADS, fileName)
+                                            }
+                                            val dm = context.getSystemService(android.content.Context.DOWNLOAD_SERVICE) as android.app.DownloadManager
+                                            dm.enqueue(req)
+                                            onHumanActionStatus?.invoke("⬇️ بدء تنزيل العرض: $fileName")
+                                        } catch (_: Exception) {}
+                                    }
+                                } catch (_: Exception) {}
 
                                 // Strip X-Requested-With package header if supported by AndroidX WebKit
                                 try {
@@ -1634,6 +1707,40 @@ fun BrowserScreen(
                                         try { callback?.invoke(origin, true, false) } catch (e: Exception) {}
                                     }
 
+                                    // Containment: never let page JS dialogs stall automation — auto-resolve + log
+                                    override fun onJsAlert(view: WebView?, url: String?, message: String?, result: android.webkit.JsResult?): Boolean {
+                                        try { result?.confirm() } catch (_: Exception) {}
+                                        onConsoleError?.invoke("⚠️ [حوار JS]: تنبيه أُغلق تلقائياً على ${(url ?: "").take(60)}: ${(message ?: "").take(80)}")
+                                        return true
+                                    }
+                                    override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: android.webkit.JsResult?): Boolean {
+                                        try { result?.confirm() } catch (_: Exception) {}
+                                        onConsoleError?.invoke("⚠️ [حوار JS]: تأكيد قُبِل تلقائياً على ${(url ?: "").take(60)}: ${(message ?: "").take(80)}")
+                                        return true
+                                    }
+                                    override fun onJsPrompt(view: WebView?, url: String?, message: String?, defaultValue: String?, result: android.webkit.JsPromptResult?): Boolean {
+                                        try { result?.confirm("") } catch (_: Exception) {}
+                                        onConsoleError?.invoke("⚠️ [حوار JS]: إدخال أُجيب فارغاً تلقائياً على ${(url ?: "").take(60)}")
+                                        return true
+                                    }
+
+                                    // Page console errors → app logs (throttled: 1 per 8s, automation only)
+                                    override fun onConsoleMessage(consoleMessage: android.webkit.ConsoleMessage?): Boolean {
+                                        try {
+                                            val msg = consoleMessage
+                                            if (msg != null && msg.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR &&
+                                                automationState.isRunning
+                                            ) {
+                                                val now = System.currentTimeMillis()
+                                                if (now - lastConsoleLogMs > 8000) {
+                                                    lastConsoleLogMs = now
+                                                    onConsoleError?.invoke("🔴 [كونسول الصفحة]: ${(msg.message() ?: "").take(140)} @ ${(msg.sourceId() ?: "").take(48)}:${msg.lineNumber()}")
+                                                }
+                                            }
+                                        } catch (_: Exception) {}
+                                        return super.onConsoleMessage(consoleMessage)
+                                    }
+
                                     override fun onCreateWindow(
                                         view: WebView?,
                                         isDialog: Boolean,
@@ -1668,15 +1775,19 @@ fun BrowserScreen(
                                              return true
                                          }
 
-                                         popupRelay.settings.apply {
-                                             javaScriptEnabled = true
-                                             domStorageEnabled = true
-                                             databaseEnabled = true
-                                             allowFileAccess = false
-                                             allowContentAccess = false
-                                             userAgentString = view?.settings?.userAgentString ?: (if (isMobileUaMode) defaultMobileUa else defaultDesktopUa)
-                                             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                                         }
+                                          popupRelay.settings.apply {
+                                              javaScriptEnabled = true
+                                              domStorageEnabled = true
+                                              databaseEnabled = true
+                                              allowFileAccess = false
+                                              allowContentAccess = false
+                                              @Suppress("DEPRECATION")
+                                              allowFileAccessFromFileURLs = false
+                                              @Suppress("DEPRECATION")
+                                              allowUniversalAccessFromFileURLs = false
+                                              userAgentString = view?.settings?.userAgentString ?: (if (isMobileUaMode) defaultMobileUa else defaultDesktopUa)
+                                              mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                                          }
                                          try {
                                              val method = WebSettingsCompat::class.java.getMethod(
                                                  "setRequestedWithHeaderOriginAllowList",
@@ -1685,25 +1796,86 @@ fun BrowserScreen(
                                              )
                                              method.invoke(null, popupRelay.settings, emptySet<String>())
                                          } catch (_: Throwable) {}
-                                         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-                                             try {
-                                                 val popupUa = popupRelay.settings.userAgentString.ifBlank { defaultMobileUa }
-                                                 WebViewCompat.addDocumentStartJavaScript(
-                                                     popupRelay,
-                                                     AutomationScriptBuilder.buildAntiDetectionScript(
-                                                         proxyIp = effectiveWebRtcIp,
-                                                         webrtcMode = effectiveWebRtcMode,
-                                                         timezone = extractedInfo.timezone,
-                                                         language = extractedInfo.language,
-                                                         latitude = extractedInfo.latitude,
-                                                         longitude = extractedInfo.longitude,
-                                                         userAgent = popupUa,
-                                                         fingerprintSeed = automationState.fingerprintSeed
-                                                     ),
-                                                     setOf("*")
-                                                 )
-                                             } catch (_: Exception) {}
-                                         }
+                                          if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                                              try {
+                                                  val popupUa = popupRelay.settings.userAgentString.ifBlank { defaultMobileUa }
+                                                  // Full shield stack parity with main tabs (no unshielded window, even transient)
+                                                  WebViewCompat.addDocumentStartJavaScript(
+                                                      popupRelay,
+                                                      AutomationScriptBuilder.buildAntiDetectionScript(
+                                                          proxyIp = effectiveWebRtcIp,
+                                                          webrtcMode = effectiveWebRtcMode,
+                                                          timezone = extractedInfo.timezone,
+                                                          language = extractedInfo.language,
+                                                          latitude = extractedInfo.latitude,
+                                                          longitude = extractedInfo.longitude,
+                                                          userAgent = popupUa,
+                                                          fingerprintSeed = automationState.fingerprintSeed
+                                                      ),
+                                                      setOf("*")
+                                                  )
+                                                  WebViewCompat.addDocumentStartJavaScript(
+                                                      popupRelay,
+                                                      AutomationScriptBuilder.buildDeviceBridgeScript(
+                                                          latitude = extractedInfo.latitude,
+                                                          longitude = extractedInfo.longitude,
+                                                          userAgent = popupUa,
+                                                          fingerprintSeed = automationState.fingerprintSeed,
+                                                          language = extractedInfo.language
+                                                      ),
+                                                      setOf("*")
+                                                  )
+                                                  if (settings.trackerShieldEnabled && settings.trackerMode != "allow") {
+                                                      WebViewCompat.addDocumentStartJavaScript(
+                                                          popupRelay,
+                                                          AutomationScriptBuilder.buildTrackerDeceptionScript(),
+                                                          setOf("*")
+                                                      )
+                                                  }
+                                                  WebViewCompat.addDocumentStartJavaScript(
+                                                      popupRelay,
+                                                      AutomationScriptBuilder.buildTimezoneScript(extractedInfo.timezone, extractedInfo.language),
+                                                      setOf("*")
+                                                  )
+                                                  WebViewCompat.addDocumentStartJavaScript(
+                                                      popupRelay,
+                                                      AutomationScriptBuilder.buildCanvasNoiseScript(),
+                                                      setOf("*")
+                                                  )
+                                              } catch (_: Exception) {}
+                                          }
+                                          // Minimal bridge (telemetry + running-state only; automation acts in tabs)
+                                          try {
+                                              popupRelay.addJavascriptInterface(
+                                                  WebAppInterface(
+                                                      onCompleted = { _, _ -> },
+                                                      isRunningProvider = {
+                                                          automationState.isRunning || tabItem.isOfferTab
+                                                      },
+                                                      activeClickTextProvider = { activeClickText ?: automationState.activeClickText },
+                                                      clickTextsProvider = { clickTexts }
+                                                  ),
+                                                  "AndroidBridge"
+                                              )
+                                          } catch (_: Exception) {}
+                                          // Popup containment: auto-dismiss dialogs, deny permissions, no geolocation grant
+                                          popupRelay.webChromeClient = object : WebChromeClient() {
+                                              override fun onJsAlert(view: WebView?, url: String?, message: String?, result: android.webkit.JsResult?): Boolean {
+                                                  try { result?.confirm() } catch (_: Exception) {}
+                                                  return true
+                                              }
+                                              override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: android.webkit.JsResult?): Boolean {
+                                                  try { result?.confirm() } catch (_: Exception) {}
+                                                  return true
+                                              }
+                                              override fun onJsPrompt(view: WebView?, url: String?, message: String?, defaultValue: String?, result: android.webkit.JsPromptResult?): Boolean {
+                                                  try { result?.confirm("") } catch (_: Exception) {}
+                                                  return true
+                                              }
+                                              override fun onPermissionRequest(request: PermissionRequest?) {
+                                                  try { request?.deny() } catch (_: Exception) {}
+                                              }
+                                          }
                                          try {
                                              android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(popupRelay, true)
                                          } catch (e: Exception) {}
@@ -1751,6 +1923,7 @@ fun BrowserScreen(
                                      onSurveillanceBlocked = { d -> onSurveillanceBlocked?.invoke(d) },
                                      trackerBlockProvider = { settings.trackerShieldEnabled && settings.trackerMode != "allow" && settings.surveillanceBlocking },
                                      xhrCorrectionProvider = { settings.xhrCorrection },
+                                     onRenderProcessGoneCallback = { didCrash -> handleRendererGone(tabItem, didCrash) },
                                      onMainFrameFinalUrl = { finalUrl ->
                                          // Header-corrected load followed redirects: sync tab URL with reality
                                          tabItem.webView?.post {
@@ -2098,6 +2271,7 @@ fun BrowserScreen(
                         },
                         modifier = Modifier.fillMaxSize()
                     )
+                    } // key(tabItem.id, crashGen)
                 }
             }
 

@@ -145,8 +145,28 @@ object SmartAutomationBrain {
         "thank you for completing", "thank you for your submission", "submission received",
         "registration complete", "entry confirmed", "order received",
         "claim confirmed", "responses recorded", "ticket number",
-        "application submitted", "survey completed", "تم التسجيل بنجاح", "شكراً لإكمالك"
+        "application submitted", "survey completed", "تم التسجيل بنجاح", "شكراً لإكمالك",
+        // Conversion-phrase expansion (multi-word only — lone generic words false-fire on landing pages)
+        "thank you", "thanks for", "congratulations", "successfully completed", "completed successfully",
+        "order confirmed", "payment successful", "account created", "check your email",
+        "verify your email", "confirmation sent", "welcome aboard", "you are in",
+        "félicitations", "merci pour", "gracias por", "danke für",
+        "تم بنجاح", "مبروك", "تأكيد الطلب", "شكرا لك", "عملية ناجحة", "تم إرسال طلبك"
     )
+
+    /** Thank-you URL patterns: path segments proving conversion even without keywords */
+    private val THANKYOU_URL_BITS = listOf(
+        "/thank", "thank-you", "thankyou", "/success", "confirmation",
+        "order-received", "order-confirm", "/receipt", "signup-success",
+        "register-success", "payment-success", "checkout-success", "survey-success",
+        "/finish", "/done", "lead-success", "conversion"
+    )
+
+    fun isThankYouUrl(url: String?): Boolean {
+        val u = url?.trim()?.lowercase() ?: return false
+        if (u.isBlank() || u == "about:blank") return false
+        return THANKYOU_URL_BITS.any { u.contains(it) }
+    }
 
     /**
      * القرار الرئيسي: ماذا نفعل الآن؟ (حلقة مغلقة تربط جميع محركات الذكاء)
@@ -300,6 +320,37 @@ object SmartAutomationBrain {
                 needsProxySwitch = true,
                 isStuck = true,
                 executionMode = "blank_wall_evict",
+                shouldExtendTaskTime = false,
+                funnelStageIndex = report.funnelStageIndex,
+                stepsAdvanced = stepsSoFar,
+                detectedQuestion = currentQ
+            )
+        }
+
+        // 3.8) صفحة خاطئة: محتوى مكتمل لا يمت للفانل بصلة (تحويلة لمسار آمن كمثال)
+        // يختلف عن الجدار الأبيض: هنا محتوى حقيقي لكنه خارج المهمة — الاستمرار هدر للميزانية
+        val isWrongPage = !isLoading &&
+            !report.isConfirmationPage && !report.isRedirectBridge &&
+            configuredCategories.isNotEmpty() &&
+            report.detectedCategory == "general" &&
+            !report.hasLocker && !report.hasOfferClickCandidate &&
+            report.unfilledRequiredCount == 0 && report.filledFieldsCount == 0 &&
+            report.radioGroupsCount == 0 && memory.totalStepsAdvanced == 0 &&
+            (samePageRepeat >= 2 || effectiveNoProgress >= 2)
+        if (isWrongPage) {
+            return SmartDecision(
+                action = NextAction.SWITCH_STRATEGY,
+                titleAr = "🚫 صفحة خارج المهمة — إخلاء المسار المضلل",
+                titleEn = "Wrong-page eviction — route burned",
+                reasonAr = "الصفحة المحملة ('${report.title.take(40)}') مكتملة لكنها خارج فئات المهمة (${configuredCategories.take(2).joinToString("،")}) بلا أي تقدم — على الأرجح تحويلة لمسار آمن. القرار: حرق المسار والتدوير.",
+                reasonEn = "Loaded page is outside task funnel (safe-route shunt). Burn route and rotate.",
+                confidence = 87,
+                delayMsBeforeNextCycle = boostedDelay(2800),
+                prioritySteps = listOf("تسجيل المسار كمحروق", "تدوير البروكسي", "إعادة التحميل لالتقاط عرض جديد"),
+                needsReload = true,
+                needsProxySwitch = true,
+                isStuck = true,
+                executionMode = "wrong_page_evict",
                 shouldExtendTaskTime = false,
                 funnelStageIndex = report.funnelStageIndex,
                 stepsAdvanced = stepsSoFar,
@@ -779,6 +830,51 @@ object SmartAutomationBrain {
         "alt_option_2" -> "alt_option_3"
         "alt_option_3" -> "force_submit"
         else -> mode
+    }
+
+    // ── AiAgent: وكيل مفتوح — يشخص DOM ويختار الإصلاح ويقرر التكرار ──
+    data class AiIssue(
+        val id: String,
+        val titleAr: String,
+        val titleEn: String,
+        val fixKey: String
+    )
+
+    object AiAgent {
+        const val MAX_ROUNDS_PER_PAGE = 3
+        const val SCORE_FIX_OK = 5
+        const val SCORE_CONVERSION = 100
+        const val SCORE_ROUND_COST = 1
+
+        /** تشخيص مشاكل DOM من التقرير الحي (مرتبة بالأولوية) */
+        fun diagnose(report: TaskCategoryPlanner.PageAnalysisReport): List<AiIssue> {
+            val out = mutableListOf<AiIssue>()
+            val hasContent = report.buttonsCount > 0 || report.fieldsCount > 0 ||
+                report.radioGroupsCount > 0 || report.selectCount > 0
+            if (!hasContent && !report.isConfirmationPage && report.url.isNotBlank()) {
+                out.add(AiIssue("missing-cta", "لا عناصر تفاعلية — إظهار الأزرار المخفية", "No interactive elements", "unhide-cta"))
+            }
+            out.add(AiIssue("overlay-trap", "فحص الطبقات الحاجبة للنقر", "Overlay trap scan", "kill-overlay"))
+            if (report.fieldsCount > 0 || report.unfilledRequiredCount > 0) {
+                out.add(AiIssue("locked-fields", "حقول/أزرار معطلة محتملة", "Locked fields", "form-unlock"))
+            }
+            if (report.buttonsCount > 0) {
+                out.add(AiIssue("zblock-cta", "إصلاح حجب المؤشر عن الأزرار", "Pointer-event unblock", "zfix-cta"))
+            }
+            out.add(AiIssue("cookie-wall", "إغلاق لافتات الموافقة", "Consent banner dismiss", "banner-dismiss"))
+            return out
+        }
+
+        /** هل يستحق جولة أخرى؟ (لم نصل للحد + بقيت إصلاحات غير مجربة) */
+        fun shouldRetry(roundsDone: Int, triedFixKeys: Set<String>, issues: List<AiIssue>): Boolean {
+            if (roundsDone >= MAX_ROUNDS_PER_PAGE) return false
+            return issues.any { !triedFixKeys.contains(it.fixKey) }
+        }
+
+        /** التالي: أول مشكلة لم تُجرب */
+        fun nextFix(issues: List<AiIssue>, triedFixKeys: Set<String>): AiIssue? {
+            return issues.firstOrNull { !triedFixKeys.contains(it.fixKey) }
+        }
     }
 
     fun sessionQuality(memory: BrainMemory, conversions: Int, runs: Int): Int {
