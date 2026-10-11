@@ -106,7 +106,11 @@ class MainActivity : ComponentActivity() {
         // ── Strict intelligence: وضع صارم عند الخطر + عدائية المضيف + تبليغ الحظر ──
         private val strictModeProvider: () -> Boolean = { false },
         private val isHostileHost: (String) -> Boolean = { false },
-        private val onSurveillanceBlocked: ((String) -> Unit)? = null
+        private val onSurveillanceBlocked: ((String) -> Unit)? = null,
+        // ── Tracker mode gate: allow = no blocking, block/deceive = block network ──
+        private val trackerBlockProvider: () -> Boolean = { true },
+        // ── Kill-switch: تصحيح XHR يمكن تعطيله من الإعدادات ──
+        private val xhrCorrectionProvider: () -> Boolean = { true }
     ) : WebViewClient() {
 
         /**
@@ -137,7 +141,9 @@ class MainActivity : ComponentActivity() {
             }
             if (!request.isForMainFrame && request.method.equals("GET", ignoreCase = true)) {
                 try {
-                    headerCorrectedXhr(request)?.let { return it }
+                    if (xhrCorrectionProvider()) {
+                        headerCorrectedXhr(request)?.let { return it }
+                    }
                 } catch (_: Exception) {
                 }
             }
@@ -267,7 +273,7 @@ class MainActivity : ComponentActivity() {
                     val mime = (conn.contentType?.substringBefore(";")?.trim())?.ifBlank { "text/html" } ?: "text/html"
                     val charset = Regex("charset=([^;]+)", RegexOption.IGNORE_CASE)
                         .find(conn.contentType ?: "")?.groupValues?.getOrNull(1)?.trim()?.ifBlank { "utf-8" } ?: "utf-8"
-                    val stream = try { conn.inputStream } catch (_: Exception) { conn.errorStream } ?: return null
+                    val rawStream = try { conn.inputStream } catch (_: Exception) { conn.errorStream } ?: return null
                     val respHeaders = mutableMapOf<String, String>()
                     try {
                         conn.headerFields?.forEach { (k, v) ->
@@ -276,6 +282,19 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     } catch (_: Exception) {}
+                    // Small bodies: buffer to provide explicit Content-Length (players/downloaders
+                    // misbehave on endless streams); large/unknown bodies stream through untouched.
+                    val stream: java.io.InputStream = try {
+                        val declared = try { conn.contentLengthLong } catch (_: Exception) { -1L }
+                        if (declared in 1..262144) {
+                            val bytes = rawStream.readBytes()
+                            respHeaders["Content-Length"] = bytes.size.toString()
+                            try { rawStream.close() } catch (_: Exception) {}
+                            java.io.ByteArrayInputStream(bytes)
+                        } else {
+                            rawStream
+                        }
+                    } catch (_: Exception) { rawStream }
                     if (syncFinalUrl && urlStr != request.url.toString()) {
                         try { onMainFrameFinalUrl?.invoke(urlStr) } catch (_: Exception) {}
                     }
@@ -330,7 +349,7 @@ class MainActivity : ComponentActivity() {
             }
             if (vendor == null) return false
             return try {
-                strictModeProvider() || isHostileHost(host)
+                trackerBlockProvider() && (strictModeProvider() || isHostileHost(host))
             } catch (_: Exception) { false }
         }
 
@@ -665,7 +684,7 @@ class MainActivity : ComponentActivity() {
              * exfiltrate full interaction recordings. Fraud/attribution SDKs are DELIBERATELY
              * absent (blocking them breaks submits/conversions).
              */
-            private val SURVEILLANCE_VENDORS = setOf(
+            internal val SURVEILLANCE_VENDORS = setOf(
                 "hotjar.com", "static.hotjar.com", "fullstory.com", "mouseflow.com",
                 "crazyegg.com", "luckyorange.com", "inspectlet.com", "contentsquare.net",
                 "quantummetric.com", "smartlook.com", "sessioncam.com", "userreplay.com",
@@ -945,6 +964,18 @@ fun CpaAutomatorApp(vm: AppViewModel = viewModel()) {
                     onRegenerateIdentity = { vm.regenerateIdentity() },
                     onRefreshGeo = { vm.refreshGeoInfo() }
                 )
+                ScreenTab.SHIELD -> com.example.ui.screens.ShieldScreen(
+                    settings = settings,
+                    automationState = automationState,
+                    onToggleTrackerShield = { vm.setTrackerShieldEnabled(it) },
+                    onSetTrackerMode = { vm.setTrackerMode(it) },
+                    onRunSelfTest = { vm.runShieldSelfTest() },
+                    onRotateProxy = { vm.rotateProxyNow() },
+                    onTriggerEscape = { vm.triggerEscapeNow() },
+                    onNudgeHumanization = { vm.nudgeHumanization(it) },
+                    onSetKillSwitch = { key, enabled -> vm.setKillSwitch(key, enabled) },
+                    statsProvider = { vm.shieldStatsSnapshot() }
+                )
                 ScreenTab.PROXIES -> ProxyPoolScreen(
                     proxies = proxies,
                     currentSettings = settings,
@@ -996,7 +1027,8 @@ fun CpaAutomatorApp(vm: AppViewModel = viewModel()) {
                 )
                 ScreenTab.LOGS -> LogsScreen(
                     logs = logs,
-                    onClearLogs = { vm.clearLogs() }
+                    onClearLogs = { vm.clearLogs() },
+                    onExportLogs = { vm.exportLogsPath() }
                 )
             }
         }

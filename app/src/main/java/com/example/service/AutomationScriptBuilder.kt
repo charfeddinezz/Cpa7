@@ -1613,6 +1613,84 @@ true;
     }
 
     /**
+     * Tracker Deception — خداع المتتبعات: stubs مزيفة لواجهات hotjar وأخواتها
+     * حتى تظن الصفحة أن التتبع يعمل (لا جدار كشف مانع إعلانات) بينما الشبكة
+     * محظورة أصلاً — حظر غير مرئي ينجّح التحويلة دون كشف.
+     */
+    fun buildTrackerDeceptionScript(): String {
+        return """
+(function() {
+  if (window.__cpaTrackerDeceived) return;
+  try {
+    Object.defineProperty(window, '__cpaTrackerDeceived', { value: true, enumerable: false, configurable: true });
+  } catch(e) {}
+  function maskFn(fn, name) {
+    try {
+      if (window.__cpaToStringMap && typeof fn === 'function') {
+        try { Object.defineProperty(fn, 'name', { value: name || '', configurable: true }); } catch(e) {}
+        window.__cpaToStringMap.set(fn, 'function ' + (name || '') + '() { [native code] }');
+      }
+    } catch(e) {}
+    return fn;
+  }
+  // جامع صامت: يقبل أي استدعاء ويبتلعه (كأن الإرسال نجح)
+  function queueStub() {
+    var q = [];
+    var f = function() { q.push(Array.prototype.slice.call(arguments)); return undefined; };
+    try {
+      f.q = q;
+      f.push = function() { q.push(Array.prototype.slice.call(arguments)); };
+      f.loaded = true;
+      f.version = '3.1.0';
+    } catch(e) {}
+    return f;
+  }
+  function ensureFn(name, factory) {
+    try { if (typeof window[name] === 'undefined') window[name] = factory(); } catch(e) {}
+  }
+  function ensureObj(name, factory) {
+    try { if (typeof window[name] === 'undefined') window[name] = factory(); } catch(e) {}
+  }
+  // Hotjar
+  ensureFn('hj', queueStub);
+  ensureObj('_hjSettings', function() { return { hjid: 0, hjsv: 6 }; });
+  // FullStory
+  ensureObj('FS', function() {
+    return {
+      identify: function() {}, setUserVars: function() {}, log: function() {}, event: function() {},
+      shutdown: function() {}, restart: function() {}, consent: function() {}, anonymize: function() {},
+      getSession: function() { return { getSessionId: function() { return 'cpa-fake-session'; }, getSessionUrl: function() { return ''; } }; },
+      getSessionId: function() { return 'cpa-fake-session'; }
+    };
+  });
+  ensureFn('_fs_namespace', function() { return 'FS'; });
+  // Mouseflow / CrazyEgg / Inspectlet / LuckyOrange / Smartlook / LogRocket
+  ensureFn('mouseflow', queueStub);
+  ensureObj('_mfq', function() { return []; });
+  ensureFn('CE2', queueStub);
+  ensureFn('__insp', queueStub);
+  ensureObj('__inspld', function() { return true; });
+  ensureFn('LO', queueStub);
+  ensureObj('__lo_site_id', function() { return 0; });
+  ensureFn('smartlook', queueStub);
+  ensureObj('Smartlook', function() { return { init: function() {}, record: function() {}, pause: function() {}, stop: function() {} }; });
+  ensureObj('LogRocket', function() {
+    return { init: function() {}, identify: function() {}, track: function() {}, log: function() {}, version: '8.0.0', sessionURL: '' };
+  });
+  // Contentsquare / QuantumMetric / SessionCam / UserReplay / Glassbox / Decibel
+  ensureFn('_uxa', queueStub);
+  ensureFn('QuantumMetric', queueStub);
+  ensureFn('sessioncam', queueStub);
+  ensureFn('userreplay', queueStub);
+  ensureObj('_glassbox', function() { return { sendEvent: function() {}, setUserId: function() {} }; });
+  ensureFn('_dbs', queueStub);
+  ensureObj('clicktale', function() { return { field: function() {}, record: function() {} }; });
+  return 'deceived_v1';
+})();
+        """.trimIndent()
+    }
+
+    /**
      * Device Bridge — الجسر الكامل: يفهم كل طلب وصول للجهاز ويحوّله للمزيف.
      * نواة تصنيف مركزية (__cpaBridge): تحصي لمسات البصمة، تسجّل النتيجة، وتبلّغ
      * الأصلي (AndroidBridge.onShieldTelemetry) عند رصد فحص بصمة حقيقي.

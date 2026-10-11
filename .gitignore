@@ -16,3 +16,8 @@
 local.properties
 .env
 debug.keystore
+
+# Build artifacts must never be committed (use Releases)
+*.apk
+*.aab
+*.zip

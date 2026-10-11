@@ -36,5 +36,13 @@ data class AppSettings(
     val humanTypingSimulation: Boolean = true, // الكتابة البشرية حرفاً بحرف مع تذبذب السرعة وتصحيح الأخطاء
     val humanPointerAndTouchPaths: Boolean = true, // مسارات الماوس واللمس بمنحنيات Bezier وقانون Fitts
     val humanReadingPauseBeforeAction: Boolean = true, // وقفات القراءة والتفكير البشري قبل النقر والإرسال
-    val humanScrollAndGazeSimulation: Boolean = true // التمرير البشري التدريجي مع التوقف للقراءة
+    val humanScrollAndGazeSimulation: Boolean = true, // التمرير البشري التدريجي مع التوقف للقراءة
+    // ── Tracker Shield: تعامل تلقائي مع متتبعات إعادة الجلسات (hotjar وأخواتها) ──
+    val trackerShieldEnabled: Boolean = true, // تفعيل درع المتتبعات
+    val trackerMode: String = "deceive", // "deceive" (حظر غير مرئي + stubs مزيفة), "block" (حظر فقط), "allow" (سماح)
+    // ── Kill-switches: مفاتيح أمان لكل وحدة ذكاء تجريبية ──
+    val blankWallEviction: Boolean = true, // كشف الجدار الأبيض وإخلاؤه
+    val evolutionaryMutations: Boolean = true, // الطفرات التطورية عند الفشل
+    val surveillanceBlocking: Boolean = true, // حظر متتبعات إعادة الجلسات
+    val xhrCorrection: Boolean = true // تصحيح ترويسات XHR/fetch
 )

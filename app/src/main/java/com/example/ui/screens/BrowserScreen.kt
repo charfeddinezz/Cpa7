@@ -508,6 +508,16 @@ fun BrowserScreen(
                         setOf("*")
                     )
                 )
+                // Tracker deception stubs (invisible blocking): page believes trackers run, nothing exfiltrates
+                if (settings.trackerShieldEnabled && settings.trackerMode != "allow") {
+                    tabItem.docStartHandlers.add(
+                        WebViewCompat.addDocumentStartJavaScript(
+                            wv,
+                            AutomationScriptBuilder.buildTrackerDeceptionScript(),
+                            setOf("*")
+                        )
+                    )
+                }
                 tabItem.docStartHandlers.add(
                     WebViewCompat.addDocumentStartJavaScript(
                         wv,
@@ -1705,7 +1715,9 @@ fun BrowserScreen(
                                               bridgePortProvider = { com.example.util.LocalSocks5HttpBridge.localPort },
                                               strictModeProvider = { automationState.intelRiskLevel != "low" },
                                               isHostileHost = { h -> onIsHostileHost?.invoke(h) == true },
-                                              onSurveillanceBlocked = { d -> onSurveillanceBlocked?.invoke(d) }
+                                              onSurveillanceBlocked = { d -> onSurveillanceBlocked?.invoke(d) },
+                                              trackerBlockProvider = { settings.trackerShieldEnabled && settings.trackerMode != "allow" && settings.surveillanceBlocking },
+                                              xhrCorrectionProvider = { settings.xhrCorrection }
                                           ) {
                                              override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean =
                                                  openPopup(request?.url?.toString())
@@ -1737,6 +1749,8 @@ fun BrowserScreen(
                                      strictModeProvider = { automationState.intelRiskLevel != "low" },
                                      isHostileHost = { h -> onIsHostileHost?.invoke(h) == true },
                                      onSurveillanceBlocked = { d -> onSurveillanceBlocked?.invoke(d) },
+                                     trackerBlockProvider = { settings.trackerShieldEnabled && settings.trackerMode != "allow" && settings.surveillanceBlocking },
+                                     xhrCorrectionProvider = { settings.xhrCorrection },
                                      onMainFrameFinalUrl = { finalUrl ->
                                          // Header-corrected load followed redirects: sync tab URL with reality
                                          tabItem.webView?.post {

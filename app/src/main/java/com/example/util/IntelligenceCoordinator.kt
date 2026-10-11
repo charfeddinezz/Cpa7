@@ -77,7 +77,8 @@ object ProxyAsnIntel {
         "kpn", "ziggo", "proximus", "telenet", "swisscom", "sunrise", "magenta",
         "play", "plusnet", "talktalk", "ee ", "three", "o2", "jio", "airtel",
         "globe", "pldt", "telkomsel", "indosat", "maxis", "celcom", "ais", "true ",
-        "dtac", "viettel", "starhub", "singtel", "frontier", "centurylink", "lumen"
+        "dtac", "viettel", "starhub", "singtel", "frontier", "centurylink", "lumen",
+        "telecom egypt", "saudi telecom", "egypt", "vodafone egypt", "orange egypt"
     )
     private val DATACENTER_KEYWORDS = listOf(
         "amazon", "aws", "digitalocean", "hetzner", "ovh", "vultr", "linode",
@@ -252,6 +253,8 @@ class IntelligenceCoordinator(
 
     fun surveillanceBlockCount(): Int = surveillanceBlocks.values.sum()
 
+    fun surveillanceSummary(): Map<String, Int> = surveillanceBlocks.toMap()
+
     /** اعتراض المراقبة أبلغ عن حظر — عدّاد + سجل أول مرة لكل نطاق */
     fun noteSurveillanceBlock(domain: String) {
         val clean = domain.trim().lowercase().take(80)
@@ -301,16 +304,27 @@ class IntelligenceCoordinator(
     @Volatile
     private var analysisRunning = true
 
+    /** دورة الحياة: نشط أثناء الأتمتة (5 ثوانٍ) وخفيف عند الخمول (60 ثانية) لتوفير البطارية */
+    @Volatile
+    var activeMode: Boolean = false
+
     private val analysisThread = thread(name = "Intel-Coordinator", isDaemon = true) {
         while (analysisRunning) {
             try {
-                Thread.sleep(5000)
+                Thread.sleep(if (activeMode) 5000L else 60000L)
                 if (analysisRunning) performRecursiveAnalysis()
             } catch (_: InterruptedException) {
                 break
             } catch (e: Exception) {
                 ilog("error", "خطأ في خيط التحليل: ${e.message}")
             }
+        }
+    }
+
+    fun setActive(active: Boolean) {
+        activeMode = active
+        if (active) {
+            try { analysisThread.interrupt() } catch (_: Exception) {}
         }
     }
 
@@ -495,7 +509,11 @@ class IntelligenceCoordinator(
                 ilog("warning", "🛡️ الدرع قديم (محقون=v${shield.applied} ≠ حالي=v${shield.current}) — يُنصح بإعادة تحميل الصفحة لحقن الدرع الجديد")
             }
             val insight = synthesizeCrossLayerInsight(proxy, identity, behavior, shield.ok)
-            issueAdaptiveCommands(insight)
+            val runningNow = automationStateProvider?.invoke()?.isRunning == true
+            // الأوامر التكيفية فقط أثناء التشغيل — عند الخمول نراقب ونوزع دون تدخل
+            if (runningNow) {
+                issueAdaptiveCommands(insight)
+            }
             lastCrossLayerInsight = insight
             if (insight.riskLevel == "critical" || insight.riskLevel == "high") {
                 sessionAnomalyCount++

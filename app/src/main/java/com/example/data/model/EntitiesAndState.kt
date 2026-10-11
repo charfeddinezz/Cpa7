@@ -160,5 +160,6 @@ data class AutomationState(
     val intelPattern: String = "mixed_pattern",
     val intelUpdatedAt: Long = 0L,
     // ── Shield telemetry: نسخة الدرع المحقونة في الجلسة (0 = لم تُحقن بعد) ──
-    val shieldVersionApplied: Int = 0
+    val shieldVersionApplied: Int = 0,
+    val lastSelfTestSummary: String = ""
 )

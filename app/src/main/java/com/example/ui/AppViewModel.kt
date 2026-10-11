@@ -43,6 +43,7 @@ import java.util.UUID
 enum class ScreenTab(val id: String, val title: String, val titleAr: String = "") {
     TASKS("tasks", "Tasks", "المهام"),
     BROWSER("browser", "Browser", "المتصفح"),
+    SHIELD("shield", "Shield", "الدرع"),
     TEMPLATES("templates", "Templates", "قوالب العمل"),
     CLICK("click", "Offer Click", "شاشة النقرة"),
     INFO("info", "Identity", "الهوية"),
@@ -138,6 +139,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val browserCommand: StateFlow<BrowserCommand?> = _browserCommand.asStateFlow()
 
     init {
+        try { com.example.util.LogFileWriter.init(getApplication()) } catch (_: Exception) {}
         // ربط المنسق بمزودات الحالة الحية — ذكاء متبادل بعد اكتمال التهيئة
         intelligenceCoordinator.attach(
             identity = { _identity.value },
@@ -174,6 +176,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val intelPrefsKey: String = "cross_layer_intel_v1"
     private val categoryPrefsKey: String = "category_intel_v1"
     private val geoPrefsKey: String = "geo_intel_v1"
+    private val seqPrefsKey: String = "sequence_intel_v1"
 
     private fun persistIntelligence() {
         try {
@@ -191,7 +194,29 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 geoObj.put(k, "${v.first}/${v.second}")
             }
             prefs.edit().putString(geoPrefsKey, geoObj.toString()).apply()
+            val seqObj = org.json.JSONObject()
+            for ((k, v) in SmartAutomationBrain.SequenceIntel.snapshot()) {
+                seqObj.put(k, "${v.first}/${v.second}")
+            }
+            prefs.edit().putString(seqPrefsKey, seqObj.toString()).apply()
         } catch (_: Exception) {}
+    }
+
+    private fun parsePairMap(raw: String): Map<String, Pair<Int, Int>> {
+        val map = mutableMapOf<String, Pair<Int, Int>>()
+        if (raw.isBlank()) return map
+        try {
+            val obj = org.json.JSONObject(raw)
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                val parts = obj.optString(k, "0/0").split("/")
+                if (parts.size == 2) {
+                    map[k] = Pair(parts[0].toIntOrNull() ?: 0, parts[1].toIntOrNull() ?: 0)
+                }
+            }
+        } catch (_: Exception) {}
+        return map
     }
 
     private fun restoreIntelligence() {
@@ -207,34 +232,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 intelligenceCoordinator.restoreState(map)
             }
-            val catRaw = prefs.getString(categoryPrefsKey, "") ?: ""
-            if (catRaw.isNotBlank()) {
-                val obj = org.json.JSONObject(catRaw)
-                val map = mutableMapOf<String, Pair<Int, Int>>()
-                val keys = obj.keys()
-                while (keys.hasNext()) {
-                    val k = keys.next()
-                    val parts = obj.optString(k, "0/0").split("/")
-                    if (parts.size == 2) {
-                        map[k] = Pair(parts[0].toIntOrNull() ?: 0, parts[1].toIntOrNull() ?: 0)
-                    }
-                }
-                if (map.isNotEmpty()) TaskCategoryPlanner.restoreCategoryStats(map)
-            }
-            val geoRaw = prefs.getString(geoPrefsKey, "") ?: ""
-            if (geoRaw.isNotBlank()) {
-                val obj = org.json.JSONObject(geoRaw)
-                val map = mutableMapOf<String, Pair<Int, Int>>()
-                val keys = obj.keys()
-                while (keys.hasNext()) {
-                    val k = keys.next()
-                    val parts = obj.optString(k, "0/0").split("/")
-                    if (parts.size == 2) {
-                        map[k] = Pair(parts[0].toIntOrNull() ?: 0, parts[1].toIntOrNull() ?: 0)
-                    }
-                }
-                if (map.isNotEmpty()) com.example.util.GeoIntel.restore(map)
-            }
+            val catMap = parsePairMap(prefs.getString(categoryPrefsKey, "") ?: "")
+            if (catMap.isNotEmpty()) TaskCategoryPlanner.restoreCategoryStats(catMap)
+            val geoMap = parsePairMap(prefs.getString(geoPrefsKey, "") ?: "")
+            if (geoMap.isNotEmpty()) com.example.util.GeoIntel.restore(geoMap)
+            val seqMap = parsePairMap(prefs.getString(seqPrefsKey, "") ?: "")
+            if (seqMap.isNotEmpty()) SmartAutomationBrain.SequenceIntel.restore(seqMap)
         } catch (_: Exception) {}
     }
 
@@ -423,28 +426,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 addLog("success", "🎯 [ترحيل]: تمت إضافة عرض Nike $100 كأولوية #1 تلقائياً.")
             }
 
-            // Automatically populate proxy pool: ensure user's default US proxy exists
+            // Automatically populate proxy pool from the configured list URL (no hardcoded credentials)
             val currentProxyCount = proxyDao.getProxyCountOnce()
             if (currentProxyCount == 0) {
-                val userProxy = com.example.data.model.ProxyItem(
-                    host = "185.100.232.75",
-                    port = 9999,
-                    type = "socks5",
-                    username = "bqjcykpcvw-a2c12283-3e44-4012-b6c0-7a476bef9351",
-                    password = "DKiwjdv40s2tG3Jk",
-                    country = "US",
-                    status = "working",
-                    lastPingMs = 120L
-                )
-                proxyDao.insertProxy(userProxy)
                 val targetUrl = _settings.value.proxyListUrl.ifBlank { IdentityService.DEFAULT_ASOCKS_URL }
                 val result = IdentityService.fetchProxiesFromUrl(targetUrl, "socks5")
                 if (result.isSuccess) {
                     val list = result.getOrNull() ?: emptyList()
                     if (list.isNotEmpty()) {
                         proxyDao.insertProxies(list)
-                        addLog("success", "Loaded ${list.size} Asocks US proxies into pool. Default active: 185.100.232.75:9999")
+                        addLog("success", "Loaded ${list.size} proxies into pool from list URL.")
+                    } else {
+                        addLog("warning", "Proxy pool is empty — import proxies via Proxy Pool screen (bulk/URL/single).")
                     }
+                } else {
+                    addLog("warning", "Proxy pool is empty and list fetch failed — import proxies via Proxy Pool screen.")
                 }
             }
         }
@@ -457,6 +453,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun addLog(level: String, message: String, taskName: String? = null) {
         val entry = LogEntry(level = level, message = message, taskName = taskName)
         _logs.update { listOf(entry) + it.take(250) }
+        try { com.example.util.LogFileWriter.append(level, message, taskName) } catch (_: Exception) {}
+    }
+
+    /** مسار أحدث ملف سجل للتصدير والتشخيص (يُنسخ للمستخدم من شاشة Logs) */
+    fun exportLogsPath(): String {
+        return try {
+            com.example.util.LogFileWriter.latestFile()?.absolutePath ?: "لا يوجد ملف سجل بعد"
+        } catch (_: Exception) { "تعذر الوصول لملف السجل" }
     }
 
     fun clearLogs() {
@@ -1369,6 +1373,88 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         return try { intelligenceCoordinator.isHostileHost(host) } catch (_: Exception) { false }
     }
 
+    // ── Shield Control Center: دوال التحكم الكامل ──
+    data class ShieldStats(
+        val blockedTrackers: Map<String, Int> = emptyMap(),
+        val blockedTotal: Int = 0,
+        val hostileHosts: String = "",
+        val topGeos: String = "",
+        val anomalies: Int = 0,
+        val humanBoost: Int = 0,
+        val proxySummary: String = "",
+        val lastShieldScore: Int = 0
+    )
+
+    fun shieldStatsSnapshot(): ShieldStats {
+        return try {
+            ShieldStats(
+                blockedTrackers = intelligenceCoordinator.surveillanceSummary(),
+                blockedTotal = intelligenceCoordinator.surveillanceBlockCount(),
+                hostileHosts = intelligenceCoordinator.hostileHostSummary(),
+                topGeos = com.example.util.GeoIntel.topCountries(),
+                anomalies = intelligenceCoordinator.sessionAnomalyCount,
+                humanBoost = SmartAutomationBrain.humanizationBoost,
+                proxySummary = com.example.util.WebProxyManager.activeProxySummary,
+                lastShieldScore = intelligenceCoordinator.lastShieldScore
+            )
+        } catch (_: Exception) { ShieldStats() }
+    }
+
+    fun setTrackerMode(mode: String) {
+        val clean = mode.trim().lowercase()
+        if (clean != "deceive" && clean != "block" && clean != "allow") return
+        updateSettings(_settings.value.copy(trackerMode = clean))
+        addLog(
+            "info",
+            when (clean) {
+                "deceive" -> "🛡️ [المتتبعات]: وضع الخداع — حظر شبكي + stubs مزيفة (غير مرئي للمواقع) ✅"
+                "block" -> "🛡️ [المتتبعات]: وضع الحظر — حظر شبكي فقط (قد تكشفه بعض كواشف المانعات)"
+                else -> "🛡️ [المتتبعات]: وضع السماح — لا حظر ولا خداع (للمقارنة والتشخيص)"
+            }
+        )
+    }
+
+    fun setTrackerShieldEnabled(enabled: Boolean) {
+        updateSettings(_settings.value.copy(trackerShieldEnabled = enabled))
+        addLog("info", "🛡️ [المتتبعات]: الدرع ${if (enabled) "مفعّل ✅" else "معطّل ⏸️"}")
+    }
+
+    /** مفاتيح القتل: تعطيل أي وحدة ذكاء تجريبية فوراً من الشاشة */
+    fun setKillSwitch(key: String, enabled: Boolean) {
+        val s = _settings.value
+        val updated = when (key) {
+            "blankWall" -> s.copy(blankWallEviction = enabled)
+            "mutations" -> s.copy(evolutionaryMutations = enabled)
+            "surveillance" -> s.copy(surveillanceBlocking = enabled)
+            "xhr" -> s.copy(xhrCorrection = enabled)
+            else -> return
+        }
+        updateSettings(updated)
+        val label = when (key) {
+            "blankWall" -> "إخلاء الجدار الأبيض"
+            "mutations" -> "الطفرات التطورية"
+            "surveillance" -> "حظر المراقبة"
+            else -> "تصحيح XHR"
+        }
+        addLog("info", "🔧 [مفتاح]: $label ${if (enabled) "مفعّل ✅" else "معطّل ⏸️"} (يطبق فوراً).")
+    }
+
+    fun rotateProxyNow() {
+        val ok = try { com.example.util.LocalSocks5HttpBridge.rotateIfConfigured() } catch (_: Exception) { false }
+        addLog(if (ok) "success" else "warning", if (ok) "🔄 [تدوير يدوي]: تم تصفير ذاكرة البروتوكولات — الاتصال القادم يعيد الاكتشاف." else "🔄 [تدوير يدوي]: لا بروكسي مهيأ للدوران.")
+    }
+
+    fun triggerEscapeNow() {
+        SmartAutomationBrain.triggerEscapeStrategy()
+        addLog("warning", "🚨 [هروب يدوي]: سيبدل العقل المسار ويعيد التحميل عند أول تحليل صفحة.")
+    }
+
+    fun nudgeHumanization(delta: Int) {
+        val cur = SmartAutomationBrain.humanizationBoost
+        SmartAutomationBrain.humanizationBoost = (cur + delta).coerceIn(0, 5)
+        addLog("info", "⏳ [الأنسنة]: المستوى ${SmartAutomationBrain.humanizationBoost} (كل مستوى +0.8 ث لكل انتظار).")
+    }
+
     /** معترض الطلبات حظر متتبع مراقبة — سجل مختصر + عدّاد المنسق */
     fun onSurveillanceBlocked(domain: String) {
         val clean = domain.trim().lowercase().take(80)
@@ -1401,6 +1487,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     if (fails.isNotEmpty()) fails.append("، ")
                     fails.append(failsArr.optString(i, ""))
                 }
+            }
+            _automationState.update {
+                it.copy(lastSelfTestSummary = "$passed ناجح / $failed فاشل" + (fails.toString().takeIf { s -> s.isNotBlank() }?.let { " ← $it" } ?: ""))
             }
             intelligenceCoordinator.noteSelfTest(passed, failed, fails.toString())
             // Critical: webdriver visible = document-start injection missed (SPA?) — one therapeutic reload
@@ -1504,11 +1593,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 configuredCategories = currentCats,
                 activeClickTarget = currentState.activeClickText,
                 memory = brainMemory,
-                taskLearning = learningForTask
+                taskLearning = learningForTask,
+                blankWallEviction = _settings.value.blankWallEviction
             )
             lastSmartDecision = decision
+            // 🧬 Sequence intelligence: طريق ميت معروف → سجل التصعيد المبكر (مرة واحدة)
+            SmartAutomationBrain.SequenceIntel.consumeDeadSeqNote().takeIf { it.isNotBlank() }?.let { note ->
+                addLog("info", "🧬 [تسلسل ميت]: $note.", currentState.currentTaskName)
+            }
             // ⬜ Blank-wall intelligence: حرق + تدوير + تحول جوال عند التكرار
-            if (decision.executionMode == "blank_wall_evict") {
+            if (_settings.value.blankWallEviction && decision.executionMode == "blank_wall_evict") {
                 val tid = currentState.currentTaskId
                 if (tid != null) {
                     val n = (blankWallCount[tid] ?: 0) + 1
@@ -1769,9 +1863,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun saveSettings(newSettings: AppSettings) = updateSettings(newSettings)
 
+    private var settingsSaveJob: Job? = null
+
     fun updateSettings(newSettings: AppSettings) {
         _settings.value = newSettings
-        saveSettingsToPrefs(newSettings)
+        // دمج كتابات prefs (debounce 500ms) — الواجهة فورية من الـ flow، والقرص يُكتب مرة واحدة
+        settingsSaveJob?.cancel()
+        settingsSaveJob = viewModelScope.launch {
+            delay(500)
+            try { saveSettingsToPrefs(_settings.value) } catch (_: Exception) {}
+        }
         if (newSettings.proxyEnabled) {
             val port = newSettings.proxyPort.toIntOrNull()
             WebProxyManager.applyProxy(getApplication(), true, newSettings.proxyHost, port, newSettings.proxyType, newSettings.proxyUser, newSettings.proxyPass) { success, msg ->
@@ -1821,10 +1922,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             captchaProvider = prefs.getString("captchaProvider", "none") ?: "none",
             captchaApiKey = prefs.getString("captchaApiKey", "") ?: "",
             proxyType = prefs.getString("proxyType", "socks5") ?: "socks5",
-            proxyHost = prefs.getString("proxyHost", "185.100.232.75") ?: "185.100.232.75",
-            proxyPort = prefs.getString("proxyPort", "9999") ?: "9999",
-            proxyUser = prefs.getString("proxyUser", "bqjcykpcvw-a2c12283-3e44-4012-b6c0-7a476bef9351") ?: "bqjcykpcvw-a2c12283-3e44-4012-b6c0-7a476bef9351",
-            proxyPass = prefs.getString("proxyPass", "DKiwjdv40s2tG3Jk") ?: "DKiwjdv40s2tG3Jk",
+            proxyHost = prefs.getString("proxyHost", "") ?: "",
+            proxyPort = prefs.getString("proxyPort", "") ?: "",
+            proxyUser = prefs.getString("proxyUser", "") ?: "",
+            proxyPass = prefs.getString("proxyPass", "") ?: "",
             proxyAutoRotate = prefs.getBoolean("proxyAutoRotate", false),
             proxyListUrl = prefs.getString("proxyListUrl", IdentityService.DEFAULT_ASOCKS_URL) ?: IdentityService.DEFAULT_ASOCKS_URL,
             webrtcMode = effectiveWebRtcMode,
@@ -1849,7 +1950,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             humanTypingSimulation = prefs.getBoolean("humanTypingSimulation", true),
             humanPointerAndTouchPaths = prefs.getBoolean("humanPointerAndTouchPaths", true),
             humanReadingPauseBeforeAction = prefs.getBoolean("humanReadingPauseBeforeAction", true),
-            humanScrollAndGazeSimulation = prefs.getBoolean("humanScrollAndGazeSimulation", true)
+            humanScrollAndGazeSimulation = prefs.getBoolean("humanScrollAndGazeSimulation", true),
+            trackerShieldEnabled = prefs.getBoolean("trackerShieldEnabled", true),
+            trackerMode = (prefs.getString("trackerMode", "deceive") ?: "deceive").takeIf {
+                it == "deceive" || it == "block" || it == "allow"
+            } ?: "deceive",
+            blankWallEviction = prefs.getBoolean("blankWallEviction", true),
+            evolutionaryMutations = prefs.getBoolean("evolutionaryMutations", true),
+            surveillanceBlocking = prefs.getBoolean("surveillanceBlocking", true),
+            xhrCorrection = prefs.getBoolean("xhrCorrection", true)
         )
     }
 
@@ -1890,6 +1999,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             putBoolean("humanPointerAndTouchPaths", s.humanPointerAndTouchPaths)
             putBoolean("humanReadingPauseBeforeAction", s.humanReadingPauseBeforeAction)
             putBoolean("humanScrollAndGazeSimulation", s.humanScrollAndGazeSimulation)
+            putBoolean("trackerShieldEnabled", s.trackerShieldEnabled)
+            putString("trackerMode", s.trackerMode)
+            putBoolean("blankWallEviction", s.blankWallEviction)
+            putBoolean("evolutionaryMutations", s.evolutionaryMutations)
+            putBoolean("surveillanceBlocking", s.surveillanceBlocking)
+            putBoolean("xhrCorrection", s.xhrCorrection)
             apply()
         }
     }
@@ -2155,6 +2270,36 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun shouldSkipTask(taskId: String): Boolean = (taskFailureCount[taskId] ?: 0) >= taskRetryLimit
 
+    /**
+     * Evolutionary retry mutation: each failure changes exactly one variable so the next
+     * attempt is a new experiment, not a repeated loss. Cycle: UA class → referer → duration.
+     */
+    private fun mutateTaskForRetry(task: TaskEntity): TaskEntity {
+        if (!_settings.value.evolutionaryMutations) return task
+        val fails = taskFailureCount[task.id] ?: 0
+        if (fails <= 0) return task
+        return when (((fails - 1) % 3) + 1) {
+            1 -> {
+                val ua = task.userAgent
+                val mobileish = ua.contains("mobile", ignoreCase = true) || ua.contains("android", ignoreCase = true)
+                val flipped = if (mobileish) "random_desktop" else "random_mobile"
+                addLog("info", "🧬 [طفرة #$fails]: '${task.name}' فشلت بـ UA ${if (mobileish) "موبايل" else "ديسكتوب"} — التجربة القادمة بـ ${if (mobileish) "ديسكتوب 🖥️" else "موبايل 📱"}.", task.name)
+                task.copy(userAgent = flipped)
+            }
+            2 -> {
+                val refs = listOf("https://www.google.com/", "https://www.bing.com/", "https://duckduckgo.com/", "https://search.yahoo.com/")
+                val next = refs[fails % refs.size]
+                addLog("info", "🧬 [طفرة #$fails]: تدوير المُحيل إلى $next لمهمة '${task.name}'.", task.name)
+                task.copy(referer = next)
+            }
+            else -> {
+                val extended = (task.browserDuration + 15).coerceAtMost(task.browserDuration + 60)
+                addLog("info", "🧬 [طفرة #$fails]: تمديد مدة '${task.name}' إلى ${extended}s لإكمال التحويل المتأخر.", task.name)
+                task.copy(browserDuration = extended)
+            }
+        }
+    }
+
     // ── Direct Nike runner: proxy OFF + Nike priority + GDFQO UTM task ──
     fun runGdfqoNikeTaskDirect() {
         // 1. Force proxy switch OFF for guaranteed direct success (user request)
@@ -2271,6 +2416,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             addLog("info", "🚀 Starting task from Tasks screen: ${task.name} (${task.url})", task.name)
+            try { intelligenceCoordinator.setActive(true) } catch (_: Exception) {}
+            try {
+                com.example.service.AutomationService.start(getApplication(), "Smart Automator · ${task.name}", "Running single task…")
+            } catch (_: Exception) {}
             try {
                 // Reset completedRuns if it already reached repeatCount so manual Run from Tasks always executes
                 val runnableTask = if (task.repeatCount > 0 && task.completedRuns >= task.repeatCount) {
@@ -2299,6 +2448,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 // Maintain the browser page so the user can inspect the final conversion / thank you screen!
                 addLog("info", "Task finished. Browser page preserved.")
+                try { intelligenceCoordinator.setActive(false) } catch (_: Exception) {}
+                try { com.example.service.AutomationService.stop(getApplication()) } catch (_: Exception) {}
             }
         }
     }
@@ -2360,6 +2511,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun startAutomation() {
         if (automationJob?.isActive == true) return
         _currentTab.value = ScreenTab.BROWSER
+        try { intelligenceCoordinator.setActive(true) } catch (_: Exception) {}
+        try {
+            com.example.service.AutomationService.start(getApplication(), "Smart Automator", "Preparing intelligent campaign…")
+        } catch (_: Exception) {}
 
         automationJob = viewModelScope.launch(Dispatchers.IO) {
             // Reset brain memory for a fresh conscious campaign + restore persistent learning
@@ -2492,7 +2647,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             continue
                         }
 
-                        runSingleTask(task)
+                        // 🧬 Evolutionary retry: mutate ONE variable per failure (never repeat the same losing config)
+                        val evolvedTask = mutateTaskForRetry(task)
+                        runSingleTask(evolvedTask)
                         persistLearning()
 
                         // 🧠 Smart adaptive wait: quality-aware human rhythm
@@ -2542,6 +2699,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 addLog("info", "Smart Automation campaign finished. Browser page preserved.")
+                try { intelligenceCoordinator.setActive(false) } catch (_: Exception) {}
+                try { com.example.service.AutomationService.stop(getApplication()) } catch (_: Exception) {}
             }
         }
     }
@@ -2812,6 +2971,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         brainMemory = SmartAutomationBrain.initialMemory()
         completionReceivedForCurrentTask = false
         currentRunTask = task
+        pushServiceStatus()
         // ذكاء موزع: لاحظ طلب الهروب من المنسق (العقل يستهلكه وينفذه داخل decide)
         if (SmartAutomationBrain.peekEscapeRequest()) {
             _automationState.update { it.copy(brainExecutionMode = "alt_option_3") }
@@ -3120,6 +3280,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val converted = completionReceivedForCurrentTask ||
             _automationState.value.brainNextAction == SmartAutomationBrain.NextAction.COMPLETE_CONVERSION.code
         SmartAutomationBrain.recordOutcome(taskLearning, task.id, converted)
+        // ذكاء التسلسلات: سجل طريق هذه المحاولة (رابح/خاسر) ليتجنبه العقل مستقبلاً
+        try {
+            SmartAutomationBrain.SequenceIntel.record(brainMemory.actionTrace, converted)
+        } catch (_: Exception) {}
         // ذكاء موزع: الفئات تتعلم + البروكسي يُقيّم + الدوران يُستهلك — كلها في السجل
         try {
             TaskCategoryPlanner.recordCategoryOutcome(parsedCats, converted)
@@ -3184,6 +3348,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         addLog(if (converted) "success" else "info", "🧠 [تعلم]: ${task.name} → تحويل=${if (converted) "نعم ✅" else "لا"} | معدل النجاح التراكمي: $rate% (${taskLearning[task.id]?.runs} runs)", task.name)
         if (currentRunTask?.id == task.id) currentRunTask = null
+        pushServiceStatus()
     }
 
     private suspend fun runMode1(task: TaskEntity) {
@@ -3293,10 +3458,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         automationJob?.cancel()
         automationJob = null
+        try { intelligenceCoordinator.setActive(false) } catch (_: Exception) {}
+        try { com.example.service.AutomationService.stop(getApplication()) } catch (_: Exception) {}
         if (clearBrowser) {
             _browserCommand.value = BrowserCommand.ClearUrl
         }
         addLog("warning", "Automation stopped.")
+    }
+
+    /** Foreground-service notification mirrors campaign progress (survives screen-off). */
+    private fun pushServiceStatus() {
+        try {
+            val st = _automationState.value
+            if (!st.isRunning) return
+            val title = "Smart Automator · ${st.currentTaskName ?: "campaign"}"
+            val text = "Phase ${st.funnelStageIndex}/6 · Runs ${st.completedThisSession} · Leads ${st.leadsThisSession} · Risk ${st.intelRiskLevel}"
+            com.example.service.AutomationService.update(getApplication(), title, text)
+        } catch (_: Exception) {}
     }
 
     fun purgeSessionAndCache() {

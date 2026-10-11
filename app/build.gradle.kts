@@ -136,6 +136,8 @@ dependencies {
   "ksp"(libs.moshi.kotlin.codegen)
 }
 
-tasks.matching { it.name == "assembleDebug" }.configureEach {
-  finalizedBy(rootProject.tasks.named("copyDebugApkToProjectRoot"))
+// Room schema export: enables explicit Migration tests for future entity changes
+// (production DB must move off fallbackToDestructiveMigration — schemas are the prerequisite).
+ksp {
+  arg("room.schemaLocation", "$projectDir/schemas")
 }

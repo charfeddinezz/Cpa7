@@ -157,7 +157,8 @@ object SmartAutomationBrain {
         configuredCategories: List<String>,
         activeClickTarget: String?,
         memory: BrainMemory,
-        taskLearning: TaskLearningStats? = null
+        taskLearning: TaskLearningStats? = null,
+        blankWallEviction: Boolean = true
     ): SmartDecision {
         val extras = parseExtras(rawJson)
         val isBlocked = detectBlocked(report, extras)
@@ -179,13 +180,20 @@ object SmartAutomationBrain {
         val isStuck = !justProgressed && ((samePageRepeat >= 2 && effectiveNoProgress >= 2) || effectiveNoProgress >= 3)
         val stepsSoFar = memory.totalStepsAdvanced + (if (justProgressed) 1 else 0)
 
-        val executionMode = when {
+        var executionMode = when {
             report.isConfirmationPage -> "confirm_lock"
             effectiveNoProgress == 1 -> "retry_react_events"
             effectiveNoProgress == 2 -> "alt_option_2"
             effectiveNoProgress == 3 -> "alt_option_3"
             effectiveNoProgress >= 4 -> "force_submit"
             else -> "normal"
+        }
+        // ذكاء التسلسلات: طريق ميت معروف → صعّد الوضع فوراً بدل إضاعة دورات
+        if (executionMode != "confirm_lock") {
+            val deadPenalty = SequenceIntel.deadPrefixPenalty(memory.actionTrace)
+            if (deadPenalty >= 2) {
+                executionMode = escalateMode(executionMode)
+            }
         }
 
         // 1) محظور — لا تعاند، بدّل الهوية/البروكسي
@@ -278,7 +286,7 @@ object SmartAutomationBrain {
             !report.hasOfferClickCandidate && report.title.trim().length < 4 &&
             report.url.isNotBlank() &&
             (samePageRepeat >= 1 || effectiveNoProgress >= 2)
-        if (isBlankWall) {
+        if (blankWallEviction && isBlankWall) {
             return SmartDecision(
                 action = NextAction.RELOAD_RETRY,
                 titleAr = "⬜ جدار الصفحة البيضاء — إخلاء المسار المحروق",
@@ -691,6 +699,86 @@ object SmartAutomationBrain {
     ) {
         val cur = learning[taskId] ?: TaskLearningStats(taskId)
         learning[taskId] = cur.copy(runs = cur.runs + 1, conversions = cur.conversions + if (converted) 1 else 0)
+    }
+
+    // ── SequenceIntel: ذاكرة التسلسلات الفائزة والميتة (تتعلم الطريق لا النتيجة فقط) ──
+    object SequenceIntel {
+        private data class Seq(var wins: Int = 0, var losses: Int = 0)
+
+        private val seqs = java.util.concurrent.ConcurrentHashMap<String, Seq>()
+
+        @Volatile
+        var lastDeadSeqNote: String = ""
+            private set
+
+        /** يقرأ الملاحظة ويمسحها (مرة واحدة لكل تصعيد — بلا إزعاج) */
+        fun consumeDeadSeqNote(): String {
+            val v = lastDeadSeqNote
+            lastDeadSeqNote = ""
+            return v
+        }
+
+        private fun keyOf(trace: List<String>): String = trace.takeLast(8).joinToString(">")
+
+        /** يُستدعى نهاية كل مهمة: سجل التسلسل الكامل رابحاً أم خاسراً */
+        fun record(trace: List<String>, converted: Boolean) {
+            if (trace.size < 2) return
+            // نوافذ متداخلة بطول 3..6 لالتقاط الأنماط القصيرة القاتلة/الفائزة
+            for (len in 3..minOf(6, trace.size)) {
+                val key = trace.takeLast(len).joinToString(">")
+                val s = seqs.computeIfAbsent(key) { Seq() }
+                synchronized(s) {
+                    if (converted) s.wins++ else s.losses++
+                }
+            }
+            if (seqs.size > 400) {
+                seqs.entries.sortedBy { it.value.wins + it.value.losses }.take(seqs.size - 400)
+                    .forEach { seqs.remove(it.key) }
+            }
+        }
+
+        /**
+         * كم تسلسلاً خاسراً مسجلاً يبدأ بالأثر الحالي (دون أي فوز مقابل)؟
+         * يُستخدم في decide() لتصعيد الوضع مبكراً بدل تكرار طريق ميت معروف.
+         */
+        fun deadPrefixPenalty(trace: List<String>): Int {
+            lastDeadSeqNote = ""
+            if (trace.size < 2) return 0
+            val prefix = keyOf(trace)
+            var penalty = 0
+            var example = ""
+            for ((k, s) in seqs) {
+                if (k == prefix || k.startsWith(prefix + ">")) {
+                    synchronized(s) {
+                        if (s.losses >= 2 && s.wins == 0) {
+                            penalty += s.losses
+                            if (example.isBlank()) example = k
+                        }
+                    }
+                }
+            }
+            if (penalty >= 2) {
+                lastDeadSeqNote = "تسلسل ميت معروف ($example) تكرر $penalty مرات بلا فوز — تصعيد مبكر"
+            }
+            return penalty
+        }
+
+        fun snapshot(): Map<String, Pair<Int, Int>> =
+            seqs.entries.associate { it.key to Pair(it.value.wins, it.value.losses) }
+
+        fun restore(snapshot: Map<String, Pair<Int, Int>>) {
+            for ((k, v) in snapshot) {
+                if (k.isNotBlank() && k.contains(">")) seqs[k] = Seq(v.first.coerceAtLeast(0), v.second.coerceAtLeast(0))
+            }
+        }
+    }
+
+    private fun escalateMode(mode: String): String = when (mode) {
+        "normal" -> "retry_react_events"
+        "retry_react_events" -> "alt_option_2"
+        "alt_option_2" -> "alt_option_3"
+        "alt_option_3" -> "force_submit"
+        else -> mode
     }
 
     fun sessionQuality(memory: BrainMemory, conversions: Int, runs: Int): Int {

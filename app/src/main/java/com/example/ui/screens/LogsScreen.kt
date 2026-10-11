@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
@@ -67,6 +68,7 @@ import java.util.Locale
 fun LogsScreen(
     logs: List<LogEntry>,
     onClearLogs: () -> Unit,
+    onExportLogs: (() -> String)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -145,6 +147,25 @@ fun LogsScreen(
                     .border(1.dp, CpaBorder, RoundedCornerShape(8.dp))
             ) {
                 Icon(Icons.Default.Delete, contentDescription = "Clear", tint = CpaTextMuted)
+            }
+
+            if (onExportLogs != null) {
+                Spacer(modifier = Modifier.width(6.dp))
+
+                IconButton(
+                    onClick = {
+                        val path = try { onExportLogs() } catch (_: Exception) { "" }
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Log File Path", path))
+                        Toast.makeText(context, "Log file: $path (path copied)", Toast.LENGTH_LONG).show()
+                    },
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(CpaCard)
+                        .border(1.dp, CpaBorder, RoundedCornerShape(8.dp))
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = "Export log file", tint = CpaPrimary)
+                }
             }
         }
 

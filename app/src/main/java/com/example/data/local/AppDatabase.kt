@@ -289,18 +289,8 @@ true;
             )
             database.emailDao().insertEmails(sampleEmails)
 
-            // Seed user's configured US Proxy
-            val userProxy = ProxyItem(
-                host = "185.100.232.75",
-                port = 9999,
-                type = "socks5",
-                username = "bqjcykpcvw-a2c12283-3e44-4012-b6c0-7a476bef9351",
-                password = "DKiwjdv40s2tG3Jk",
-                country = "US",
-                status = "working",
-                lastPingMs = 120L
-            )
-            database.proxyDao().insertProxy(userProxy)
+            // No seeded proxy credentials (secrets must never live in source).
+            // Import proxies via Proxy Pool screen (bulk/URL/single).
 
             // Seed initial Offer Click texts (with user's exact requested text at orderIndex 0)
             val initialClickTexts = listOf(

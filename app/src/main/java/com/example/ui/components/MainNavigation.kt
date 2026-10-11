@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.ListAlt
 import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.Icon
@@ -58,6 +59,7 @@ fun MainNavigation(
     val tabs: List<Pair<ScreenTab, ImageVector>> = listOf(
         Pair(ScreenTab.TASKS, Icons.Default.ListAlt),
         Pair(ScreenTab.BROWSER, Icons.Default.Language),
+        Pair(ScreenTab.SHIELD, Icons.Default.Shield),
         Pair(ScreenTab.TEMPLATES, Icons.Default.Build),
         Pair(ScreenTab.CLICK, Icons.Default.TouchApp),
         Pair(ScreenTab.INFO, Icons.Default.Badge),
